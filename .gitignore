@@ -39,3 +39,9 @@ desktop.ini
 
 # Burst debug
 RealityDropAR_BurstDebugInformation_DoNotShip/
+
+# Android native build artifacts
+.utmp/
+
+# Embedded repos
+RealityDrop/
