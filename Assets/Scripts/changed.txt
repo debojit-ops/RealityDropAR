@@ -1,0 +1,3 @@
+changes made in SearchUI line 50 replaced with - PreviewScene_new
+sketchfabapimanager line 161 replaced with - PreviewScene_new
+thumbnailcs line 71
