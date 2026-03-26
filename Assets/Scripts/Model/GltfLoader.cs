@@ -42,11 +42,19 @@ public static class GltfLoader
         return null;
     }
 
+    /// <summary>
+    /// Converts a raw file system path to a file:// URI for glTFast on Android.
+    /// Safe to call multiple times — won't double-prefix.
+    /// </summary>
+    public static string ToGltfUri(string path)
+    {
+        if (path.StartsWith("http://") || path.StartsWith("https://") || path.StartsWith("file://"))
+            return path;
+        return "file://" + path;
+    }
+
     public static async Task<bool> InvokeLoadWithReflection(GltfImport gltf, string path, ImportSettings importSettings, object materialGenerator = null)
     {
-        // Ensure proper URI format for Android — raw paths silently fail on device
-        if (!path.StartsWith("file://") && !path.StartsWith("http"))
-            path = "file://" + path;
         var methods = gltf.GetType()
             .GetMethods(BindingFlags.Instance | BindingFlags.Public)
             .Where(m => string.Equals(m.Name, "Load", StringComparison.OrdinalIgnoreCase))
@@ -114,6 +122,10 @@ public static class GltfLoader
         return false;
     }
 
+    /// <summary>
+    /// Replaces any shader that isn't a URP shader with URP/Lit.
+    /// This covers glTFast shaders that get stripped in Android builds.
+    /// </summary>
     public static void FixMaterialsToURP(GameObject root)
     {
         var urp = Shader.Find("Universal Render Pipeline/Lit");
@@ -128,24 +140,51 @@ public static class GltfLoader
             var mats = rend.sharedMaterials ?? rend.materials;
             if (mats == null) continue;
 
-            for (int i = 0; i < mats.Length; ++i)
+            bool needsUpdate = false;
+            var arr = rend.materials;
+
+            for (int i = 0; i < arr.Length; ++i)
             {
-                var mat = mats[i];
-                bool replace = mat == null || mat.shader == null;
-                if (!replace)
+                var mat = arr[i];
+                if (mat == null || mat.shader == null)
                 {
-                    string sname = mat.shader.name ?? "";
-                    replace = sname.Contains("Hidden/InternalErrorShader") || sname.ToLower().Contains("error");
+                    arr[i] = new Material(urp) { name = "URP_Fallback" };
+                    needsUpdate = true;
+                    continue;
                 }
 
-                if (replace)
+                string shaderName = mat.shader.name ?? "";
+
+                // Replace if: shader is missing, error, or not a URP shader
+                bool isUrp = shaderName.StartsWith("Universal Render Pipeline") ||
+                             shaderName.StartsWith("Sprites/") ||
+                             shaderName.StartsWith("UI/");
+
+                if (!isUrp)
                 {
-                    var arr = rend.materials;
-                    arr[i] = new Material(urp) { name = "URP_Fallback_Material" };
-                    rend.materials = arr;
-                    Debug.LogWarning("[GltfLoader] Replaced broken material on " + rend.name + " with URP/Lit");
+                    // Preserve albedo color and main texture when possible
+                    var newMat = new Material(urp) { name = mat.name + "_URP" };
+                    try
+                    {
+                        if (mat.HasProperty("_Color"))
+                            newMat.color = mat.color;
+                        if (mat.HasProperty("_MainTex") && mat.mainTexture != null)
+                            newMat.mainTexture = mat.mainTexture;
+                        if (mat.HasProperty("_BaseColor"))
+                            newMat.SetColor("_BaseColor", mat.GetColor("_BaseColor"));
+                        if (mat.HasProperty("_BaseMap") && mat.GetTexture("_BaseMap") != null)
+                            newMat.SetTexture("_BaseMap", mat.GetTexture("_BaseMap"));
+                    }
+                    catch { }
+
+                    arr[i] = newMat;
+                    needsUpdate = true;
+                    Debug.Log($"[GltfLoader] Replaced shader '{shaderName}' on {rend.name} with URP/Lit");
                 }
             }
+
+            if (needsUpdate)
+                rend.materials = arr;
         }
     }
 }
