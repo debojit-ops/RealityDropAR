@@ -2,6 +2,8 @@ using System;
 using System.IO;
 using System.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 using GLTFast;
 using GLTFast.Materials;
 
@@ -34,8 +36,10 @@ public static class GltfLoader
         Debug.Log("[GltfLoader] Loading URI: " + uri);
 
         // Use URP material generator so glTFast generates URP-compatible materials natively
-        // This avoids shader stripping issues on Android builds
-        var materialGenerator = new UniversalRenderPipelineMaterialGenerator();
+        var urpAsset = GraphicsSettings.currentRenderPipeline as UniversalRenderPipelineAsset;
+        var materialGenerator = urpAsset != null
+            ? new UniversalRPMaterialGenerator(urpAsset)
+            : null;
         var gltf = new GltfImport(materialGenerator: materialGenerator);
 
         bool success = await gltf.Load(uri, CreateImportSettings());
