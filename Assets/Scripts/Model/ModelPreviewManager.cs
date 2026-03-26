@@ -1,7 +1,6 @@
 using System.IO;
 using System.Threading.Tasks;
 using UnityEngine;
-using GLTFast;
 
 public class ModelPreviewManager : MonoBehaviour
 {
@@ -70,19 +69,11 @@ public class ModelPreviewManager : MonoBehaviour
 
         if (debugMode) Debug.Log("[ModelPreviewManager] Loading: " + filePath);
 
-        // Convert to proper URI for glTFast (handles Windows file:///C:/ and Android file:///data/)
-        string uri = GltfLoader.ToGltfUri(filePath);
-        if (debugMode) Debug.Log("[ModelPreviewManager] glTFast URI: " + uri);
-
-        var gltf = new GltfImport();
-        bool success = await GltfLoader.InvokeLoadWithReflection(
-            gltf, uri,
-            GltfLoader.CreateImportSettings(),
-            GltfLoader.CreateURPMaterialGeneratorIfAvailable());
+        var (success, gltf) = await GltfLoader.Load(filePath);
 
         if (!success)
         {
-            Debug.LogError("[ModelPreviewManager] glTFast failed to load: " + uri);
+            Debug.LogError("[ModelPreviewManager] glTFast failed to load: " + filePath);
             return;
         }
 
@@ -96,9 +87,6 @@ public class ModelPreviewManager : MonoBehaviour
             loadedModel = null;
             return;
         }
-
-        // Fix all non-URP shaders (covers glTFast shaders stripped on Android)
-        GltfLoader.FixMaterialsToURP(loadedModel);
 
         loadedModel.transform.SetParent(modelParent, false);
         loadedModel.transform.localScale = Vector3.one;

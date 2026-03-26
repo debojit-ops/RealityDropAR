@@ -1,6 +1,5 @@
 using System.IO;
 using UnityEngine;
-using GLTFast;
 
 public class ModelLoader : MonoBehaviour
 {
@@ -22,14 +21,7 @@ public class ModelLoader : MonoBehaviour
 
         Debug.Log("[ModelLoader] Loading: " + filePath);
 
-        // Convert to proper URI for glTFast (handles Windows file:///C:/ and Android file:///data/)
-        string uri = GltfLoader.ToGltfUri(filePath);
-
-        var gltf = new GltfImport();
-        bool loaded = await GltfLoader.InvokeLoadWithReflection(
-            gltf, uri,
-            GltfLoader.CreateImportSettings(),
-            GltfLoader.CreateURPMaterialGeneratorIfAvailable());
+        var (loaded, gltf) = await GltfLoader.Load(filePath);
 
         if (!loaded)
         {
@@ -46,9 +38,6 @@ public class ModelLoader : MonoBehaviour
             Destroy(container);
             return;
         }
-
-        // Fix all non-URP shaders (covers glTFast shaders stripped on Android)
-        GltfLoader.FixMaterialsToURP(container);
 
         if (LastLoadedModel != null)
             Destroy(LastLoadedModel);
