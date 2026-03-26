@@ -44,6 +44,9 @@ public static class GltfLoader
 
     public static async Task<bool> InvokeLoadWithReflection(GltfImport gltf, string path, ImportSettings importSettings, object materialGenerator = null)
     {
+        // Ensure proper URI format for Android — raw paths silently fail on device
+        if (!path.StartsWith("file://") && !path.StartsWith("http"))
+            path = "file://" + path;
         var methods = gltf.GetType()
             .GetMethods(BindingFlags.Instance | BindingFlags.Public)
             .Where(m => string.Equals(m.Name, "Load", StringComparison.OrdinalIgnoreCase))

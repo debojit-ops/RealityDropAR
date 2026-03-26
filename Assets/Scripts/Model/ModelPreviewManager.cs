@@ -368,11 +368,18 @@ public class ModelPreviewManager : MonoBehaviour
 
         if (debugMode) Debug.Log($"[ModelPreviewManager] Loading GLB from: {filePath}");
 
+        // glTFast on Android requires a file:// URI — raw paths silently fail
+        string gltfUri = filePath.StartsWith("file://") ? filePath : "file://" + filePath;
+
         var gltf = new GltfImport();
-        bool success = await gltf.Load(filePath);
+        bool success = await GltfLoader.InvokeLoadWithReflection(
+            gltf, gltfUri,
+            GltfLoader.CreateImportSettings(),
+            GltfLoader.CreateURPMaterialGeneratorIfAvailable());
+
         if (!success)
         {
-            Debug.LogError("glTFast failed to load: " + filePath);
+            Debug.LogError("[ModelPreviewManager] glTFast failed to load: " + gltfUri);
             return;
         }
 
@@ -387,6 +394,8 @@ public class ModelPreviewManager : MonoBehaviour
             Destroy(loadedModel);
             return;
         }
+
+        GltfLoader.FixMaterialsToURP(loadedModel);
 
         // Parent under modelParent (PreviewAnchor)
         loadedModel.transform.SetParent(modelParent, false);

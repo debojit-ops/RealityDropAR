@@ -22,9 +22,12 @@ public class ModelLoader : MonoBehaviour
 
         Debug.Log("[ModelLoader] Loading: " + filePath);
 
+        // glTFast on Android requires a file:// URI — raw paths silently fail
+        string gltfUri = filePath.StartsWith("file://") ? filePath : "file://" + filePath;
+
         var gltf = new GltfImport();
         bool loaded = await GltfLoader.InvokeLoadWithReflection(
-            gltf, filePath,
+            gltf, gltfUri,
             GltfLoader.CreateImportSettings(),
             GltfLoader.CreateURPMaterialGeneratorIfAvailable());
 
