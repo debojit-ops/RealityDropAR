@@ -70,7 +70,7 @@ public class ModelPreviewManager : MonoBehaviour
 
         if (debugMode) Debug.Log("[ModelPreviewManager] Loading: " + filePath);
 
-        // Convert to URI only for glTFast — Android requires file:// prefix
+        // Convert to proper URI for glTFast (handles Windows file:///C:/ and Android file:///data/)
         string uri = GltfLoader.ToGltfUri(filePath);
         if (debugMode) Debug.Log("[ModelPreviewManager] glTFast URI: " + uri);
 

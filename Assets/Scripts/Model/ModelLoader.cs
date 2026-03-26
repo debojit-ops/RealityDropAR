@@ -22,7 +22,7 @@ public class ModelLoader : MonoBehaviour
 
         Debug.Log("[ModelLoader] Loading: " + filePath);
 
-        // Convert to URI only for glTFast — Android requires file:// prefix
+        // Convert to proper URI for glTFast (handles Windows file:///C:/ and Android file:///data/)
         string uri = GltfLoader.ToGltfUri(filePath);
 
         var gltf = new GltfImport();
