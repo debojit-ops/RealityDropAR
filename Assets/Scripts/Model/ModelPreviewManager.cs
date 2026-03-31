@@ -1,6 +1,7 @@
 using System.IO;
 using System.Threading.Tasks;
 using UnityEngine;
+using GLTFast;
 
 public class ModelPreviewManager : MonoBehaviour
 {
@@ -23,9 +24,15 @@ public class ModelPreviewManager : MonoBehaviour
     public int maxWaitFrames = 12;
 
     private GameObject loadedModel;
+    private GltfImport loadedGltf;
+    private string loadedPath;
     private Vector3 initialCameraPosition;
     private Quaternion initialCameraRotation;
     private float currentCameraDistance;
+
+    // Exposed so PreviewUIManager can pass it to ARModelBridge before scene switch
+    public GltfImport LoadedGltf => loadedGltf;
+    public string LoadedPath => loadedPath;
 
     private async void Start()
     {
@@ -76,6 +83,9 @@ public class ModelPreviewManager : MonoBehaviour
             Debug.LogError("[ModelPreviewManager] glTFast failed to load: " + filePath);
             return;
         }
+
+        loadedGltf = gltf;
+        loadedPath = filePath;
 
         loadedModel = new GameObject("LoadedModel");
         success = await gltf.InstantiateMainSceneAsync(loadedModel.transform);

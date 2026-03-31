@@ -151,14 +151,32 @@ public class PreviewUIManager : MonoBehaviour
     public void OnViewInAR()
     {
         string path = PlayerPrefs.GetString("LastModelPath", "");
-        if (!string.IsNullOrEmpty(path))
+        if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path))
         {
-            Debug.Log("Launching ARScene with model: " + path);
-            SceneManager.LoadScene("ARScene");
+            Debug.LogError("[PreviewUIManager] Cannot go to AR — file missing or path empty: '" + path + "'");
+            return;
+        }
+
+        // Ensure bridge exists in scene
+        if (ARModelBridge.Instance == null)
+        {
+            var bridgeGO = new GameObject("ARModelBridge");
+            bridgeGO.AddComponent<ARModelBridge>();
+        }
+
+        // Store the already-loaded GltfImport so ARScene doesn't need to re-load
+        if (previewManager != null && previewManager.LoadedGltf != null)
+        {
+            ARModelBridge.Instance.SetModel(previewManager.LoadedGltf, path);
+            Debug.Log("[PreviewUIManager] GltfImport stored in bridge. Switching to ARScene.");
         }
         else
         {
-            Debug.LogWarning("No model path found in PlayerPrefs!");
+            // Fallback: bridge will carry path only, ARScene will re-load
+            ARModelBridge.Instance.SetModel(null, path);
+            Debug.LogWarning("[PreviewUIManager] No GltfImport available — ARScene will re-load from path.");
         }
+
+        SceneManager.LoadScene("ARScene");
     }
 }
