@@ -11,11 +11,6 @@ public class ModelLoader : MonoBehaviour
         LastLoadedModel = model;
     }
 
-    // Called by ARSceneInitializer when it instantiates via the bridge
-    public void SetLastLoadedModel(GameObject model)
-    {
-        LastLoadedModel = model;
-    }
 
     // Static cache — survives scene transitions so the same GLB is never parsed twice
     private static string _cachedPath;

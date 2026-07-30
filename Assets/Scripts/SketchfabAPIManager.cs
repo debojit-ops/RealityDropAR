@@ -162,6 +162,8 @@ public class SketchfabAPIManager : MonoBehaviour
         {
             if (!string.IsNullOrEmpty(glbPath))
             {
+                // New model selected — clear the cached instance so AR re-loads fresh
+                ModelLoader.ClearCache();
                 PlayerPrefs.SetString("LastModelPath", glbPath);
                 PlayerPrefs.Save();
                 UnityEngine.SceneManagement.SceneManager.LoadScene("PreviewScene_new");

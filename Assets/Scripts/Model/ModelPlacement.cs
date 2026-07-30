@@ -363,9 +363,11 @@ public class ModelPlacement : MonoBehaviour
 {
     public ARRaycastManager raycastManager;
     public ModelLoader modelLoader;
+    public ARSceneInitializer sceneInitializer;
 
     static List<ARRaycastHit> hits = new List<ARRaycastHit>();
     private bool placed = false;
+    private bool placementModeActive = false;
 
     void Start()
     {
@@ -374,19 +376,59 @@ public class ModelPlacement : MonoBehaviour
 
         if (modelLoader == null)
             modelLoader = FindFirstObjectByType<ModelLoader>();
+
+        if (sceneInitializer == null)
+            sceneInitializer = FindFirstObjectByType<ARSceneInitializer>();
+    }
+
+    // Called by the Spawn button in ARScene UI
+    public void OnSpawnButtonPressed()
+    {
+        if (modelLoader == null || modelLoader.LastLoadedModel == null)
+        {
+            Debug.LogError("[ModelPlacement] Spawn pressed but no model is loaded.");
+            return;
+        }
+
+        if (sceneInitializer != null && !sceneInitializer.IsModelReady)
+            Debug.LogWarning("[ModelPlacement] Model not ready yet — placement mode active, tap will be ignored until ready.");
+
+        // Check how many AR planes are currently detected
+        var planeManager = FindFirstObjectByType<UnityEngine.XR.ARFoundation.ARPlaneManager>();
+        int planeCount = 0;
+        if (planeManager != null)
+            foreach (var _ in planeManager.trackables) planeCount++;
+
+        if (planeCount > 0)
+            Debug.Log($"[ModelPlacement] Spawn pressed — {planeCount} plane(s) detected. Tap a surface to place.");
+        else
+            Debug.LogWarning("[ModelPlacement] Spawn pressed — NO planes detected yet. Move your device slowly over a flat surface.");
+
+        placementModeActive = true;
     }
 
     void Update()
     {
+        if (!placementModeActive) return;
         if (Input.touchCount == 0) return;
 
         Touch touch = Input.GetTouch(0);
         if (touch.phase != TouchPhase.Began) return;
 
+        if (sceneInitializer != null && !sceneInitializer.IsModelReady)
+        {
+            Debug.Log("[ModelPlacement] Model still loading, tap ignored.");
+            return;
+        }
+
         if (raycastManager.Raycast(touch.position, hits, TrackableType.PlaneWithinPolygon))
         {
             Pose hitPose = hits[0].pose;
             PlaceModel(hitPose);
+        }
+        else
+        {
+            Debug.Log("[ModelPlacement] Tap did not hit a detected plane. Keep scanning the surface.");
         }
     }
 
@@ -410,22 +452,47 @@ public class ModelPlacement : MonoBehaviour
             placed = true;
         }
 
-        Debug.Log("[ModelPlacement] Model placed.");
+        placementModeActive = false;
+        Debug.Log("[ModelPlacement] Model successfully placed in AR at: " + pose.position);
     }
 
     void NormalizeScale(GameObject model)
     {
+        // Reset to identity first so bounds are measured at a known clean scale,
+        // avoiding compounding errors from glTFast nested transform scales.
+        model.transform.localScale = Vector3.one;
+
         var renderers = model.GetComponentsInChildren<Renderer>();
         if (renderers.Length == 0) return;
 
-        Bounds b = renderers[0].bounds;
-        foreach (var r in renderers) b.Encapsulate(r.bounds);
+        // Use local-space bounds relative to the model root to avoid
+        // world-position offset skewing the size measurement.
+        Vector3 min = Vector3.one * float.MaxValue;
+        Vector3 max = Vector3.one * float.MinValue;
+        foreach (var r in renderers)
+        {
+            Bounds wb = r.bounds;
+            Vector3 c = wb.center, e = wb.extents;
+            Vector3[] corners = {
+                new Vector3(c.x+e.x, c.y+e.y, c.z+e.z), new Vector3(c.x+e.x, c.y+e.y, c.z-e.z),
+                new Vector3(c.x+e.x, c.y-e.y, c.z+e.z), new Vector3(c.x+e.x, c.y-e.y, c.z-e.z),
+                new Vector3(c.x-e.x, c.y+e.y, c.z+e.z), new Vector3(c.x-e.x, c.y+e.y, c.z-e.z),
+                new Vector3(c.x-e.x, c.y-e.y, c.z+e.z), new Vector3(c.x-e.x, c.y-e.y, c.z-e.z)
+            };
+            foreach (var corner in corners)
+            {
+                Vector3 lp = model.transform.InverseTransformPoint(corner);
+                min = Vector3.Min(min, lp);
+                max = Vector3.Max(max, lp);
+            }
+        }
 
-        float maxDim = Mathf.Max(b.size.x, b.size.y, b.size.z);
+        Vector3 localSize = max - min;
+        float maxDim = Mathf.Max(localSize.x, localSize.y, localSize.z);
         if (maxDim <= 0f) return;
 
         float targetSize = 0.5f; // meters
-        float scaleFactor = targetSize / maxDim;
-        model.transform.localScale *= scaleFactor;
+        // Assign absolute scale directly — never multiply into an unknown existing scale.
+        model.transform.localScale = Vector3.one * (targetSize / maxDim);
     }
 }
