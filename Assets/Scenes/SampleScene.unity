@@ -155,7 +155,7 @@ RectTransform:
   m_AnchorMin: {x: 0, y: 1}
   m_AnchorMax: {x: 1, y: 1}
   m_AnchoredPosition: {x: 0, y: 0}
-  m_SizeDelta: {x: 0, y: 2392.9}
+  m_SizeDelta: {x: 0, y: 0}
   m_Pivot: {x: 0.5, y: 1}
 --- !u!114 &12224236
 MonoBehaviour:
@@ -170,7 +170,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   m_HorizontalFit: 2
-  m_VerticalFit: 0
+  m_VerticalFit: 2
 --- !u!114 &12224237
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -186,14 +186,14 @@ MonoBehaviour:
   m_Padding:
     m_Left: 0
     m_Right: 0
-    m_Top: -1763
-    m_Bottom: -702
+    m_Top: -162
+    m_Bottom: 10
   m_ChildAlignment: 0
-  m_Spacing: -984.07
+  m_Spacing: -468
   m_ChildForceExpandWidth: 1
   m_ChildForceExpandHeight: 1
   m_ChildControlWidth: 1
-  m_ChildControlHeight: 1
+  m_ChildControlHeight: 0
   m_ChildScaleWidth: 1
   m_ChildScaleHeight: 1
   m_ReverseArrangement: 1
@@ -213,7 +213,7 @@ MonoBehaviour:
   m_MinWidth: -1
   m_MinHeight: -1
   m_PreferredWidth: 331.97
-  m_PreferredHeight: 2392.9
+  m_PreferredHeight: 4504.6
   m_FlexibleWidth: 1
   m_FlexibleHeight: -1
   m_LayoutPriority: 1
@@ -1533,7 +1533,7 @@ MonoBehaviour:
   m_HandleRect: {fileID: 1216247092}
   m_Direction: 2
   m_Value: 1
-  m_Size: 0.2878767
+  m_Size: 0.1529237
   m_NumberOfSteps: 0
   m_OnValueChanged:
     m_PersistentCalls:
@@ -1894,7 +1894,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   searchBar: {fileID: 849795812}
   searchButton: {fileID: 987912524}
+  scrollRect: {fileID: 0}
   api: {fileID: 1258281433}
+  loadMoreThreshold: 0.15
 --- !u!4 &972874998
 Transform:
   m_ObjectHideFlags: 0
@@ -2046,7 +2048,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   searchBar: {fileID: 0}
   searchButton: {fileID: 0}
+  scrollRect: {fileID: 0}
   api: {fileID: 0}
+  loadMoreThreshold: 0.15
 --- !u!1 &1061364129
 GameObject:
   m_ObjectHideFlags: 0
@@ -2319,6 +2323,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   thumbnailPrefab: {fileID: 5502568422939316628, guid: 1c7f3d6ae2e45d64ebeb33cbf3cc8a43, type: 3}
   resultsParent: {fileID: 12224234}
+  autoLoadPages: 4
+  loadInfiniteNoLimit: 1
 --- !u!4 &1258281434
 Transform:
   m_ObjectHideFlags: 0

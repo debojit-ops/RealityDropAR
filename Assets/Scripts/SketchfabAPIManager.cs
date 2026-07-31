@@ -17,9 +17,16 @@ public class SketchfabAPIManager : MonoBehaviour
     public GameObject thumbnailPrefab;
     public Transform resultsParent;
 
+    [Header("Loading Settings")]
+    [Tooltip("How many extra pages to load automatically when searching (e.g. 4 pages = ~120 models total upfront)")]
+    public int autoLoadPages = 4;
+    [Tooltip("If true, it will attempt to load EVERY result Sketchfab has. WARNING: High risk of crashing mobile devices out of memory!")]
+    public bool loadInfiniteNoLimit = false;
+
     private string apiToken;
     private string nextPageUrl = null;
     private bool isFetchingPage = false;
+    private int pagesLeftToAutoLoad = 0;
 
     void Awake()
     {
@@ -53,6 +60,7 @@ public class SketchfabAPIManager : MonoBehaviour
         }
 
         nextPageUrl = null;
+        pagesLeftToAutoLoad = loadInfiniteNoLimit ? 9999 : autoLoadPages;
         ClearResults();
         
         string initialUrl = "https://api.sketchfab.com/v3/search?type=models&q=" + UnityWebRequest.EscapeURL(query);
@@ -124,11 +132,22 @@ public class SketchfabAPIManager : MonoBehaviour
             var images = (JArray)model["thumbnails"]?["images"];
             if (images != null && images.Count > 0)
             {
-                int bestIndex = 0, bestWidth = -1;
+                int bestIndex = 0;
+                int minDiff = int.MaxValue;
+                // Target ~512px width for a good balance of quality and RAM
+                // (Using the maximum size will crash the app when loading "no limit" cards)
                 for (int i = 0; i < images.Count; i++)
                 {
                     int w = images[i].Value<int?>("width") ?? -1;
-                    if (w > bestWidth) { bestWidth = w; bestIndex = i; }
+                    if (w > 0)
+                    {
+                        int diff = Mathf.Abs(w - 512);
+                        if (diff < minDiff)
+                        {
+                            minDiff = diff;
+                            bestIndex = i;
+                        }
+                    }
                 }
                 thumbnailUrl = images[bestIndex].Value<string>("url");
                 if (string.IsNullOrEmpty(thumbnailUrl))
@@ -153,6 +172,13 @@ public class SketchfabAPIManager : MonoBehaviour
         }
 
         Debug.Log($"[SketchfabAPIManager] Loaded {results.Count} models. Next page available: {!string.IsNullOrEmpty(nextPageUrl)}");
+
+        // Automatically load the next page if we have auto-load remaining
+        if (pagesLeftToAutoLoad > 0 && !string.IsNullOrEmpty(nextPageUrl))
+        {
+            pagesLeftToAutoLoad--;
+            FetchNextPage();
+        }
     }
 
     private IEnumerator LoadThumbnail(string url, RawImage image)
