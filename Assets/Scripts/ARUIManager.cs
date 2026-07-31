@@ -6,6 +6,7 @@ public class ARUIManager : MonoBehaviour
 {
     public Button backButton;
     public Button spawnButton;
+    public Button resetButton;
 
     private ModelPlacement modelPlacement;
 
@@ -24,6 +25,12 @@ public class ARUIManager : MonoBehaviour
                 modelPlacement.OnSpawnButtonPressed();
             else
                 Debug.LogError("[ARUIManager] ModelPlacement not found in scene.");
+        });
+
+        if (resetButton) resetButton.onClick.AddListener(() =>
+        {
+            if (modelPlacement != null)
+                modelPlacement.ResetPlacement();
         });
     }
 }

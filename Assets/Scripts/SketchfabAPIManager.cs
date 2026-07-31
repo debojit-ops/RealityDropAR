@@ -11,13 +11,15 @@ using Newtonsoft.Json.Linq;
 public class SketchfabAPIManager : MonoBehaviour
 {
     private const string TokenPrefKey = "SketchfabApiToken";
+    private const string DefaultToken = "74a53107840d4c52870087a8022d4a3c";
 
+    [Header("UI Hierarchy")]
     public GameObject thumbnailPrefab;
     public Transform resultsParent;
 
     private string apiToken;
-
-    private const string DefaultToken = "74a53107840d4c52870087a8022d4a3c";
+    private string nextPageUrl = null;
+    private bool isFetchingPage = false;
 
     void Awake()
     {
@@ -35,6 +37,7 @@ public class SketchfabAPIManager : MonoBehaviour
 
     public string GetApiToken() => apiToken;
 
+    /// <summary>Start a fresh search query. Clears existing results and resets pagination.</summary>
     public void SearchModels(string query)
     {
         if (string.IsNullOrEmpty(apiToken))
@@ -42,12 +45,38 @@ public class SketchfabAPIManager : MonoBehaviour
             Debug.LogError("[SketchfabAPIManager] Cannot search: API token is not set.");
             return;
         }
-        StartCoroutine(SearchCoroutine(query));
+
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            Debug.LogWarning("[SketchfabAPIManager] Empty search query.");
+            return;
+        }
+
+        nextPageUrl = null;
+        ClearResults();
+        
+        string initialUrl = "https://api.sketchfab.com/v3/search?type=models&q=" + UnityWebRequest.EscapeURL(query);
+        StartCoroutine(FetchPageCoroutine(initialUrl, isNewSearch: true));
     }
 
-    private IEnumerator SearchCoroutine(string query)
+    /// <summary>Called by Endless Scrolling (SearchUI) when scrolling near viewport bottom.</summary>
+    public void FetchNextPage()
     {
-        string url = "https://api.sketchfab.com/v3/search?type=models&q=" + UnityWebRequest.EscapeURL(query);
+        if (isFetchingPage) return;
+
+        if (string.IsNullOrEmpty(nextPageUrl))
+        {
+            Debug.Log("[SketchfabAPIManager] No more pages available.");
+            return;
+        }
+
+        Debug.Log($"[SketchfabAPIManager] Fetching next page: {nextPageUrl}");
+        StartCoroutine(FetchPageCoroutine(nextPageUrl, isNewSearch: false));
+    }
+
+    private IEnumerator FetchPageCoroutine(string url, bool isNewSearch)
+    {
+        isFetchingPage = true;
 
         UnityWebRequest request = UnityWebRequest.Get(url);
         request.SetRequestHeader("Authorization", "Token " + apiToken);
@@ -56,21 +85,35 @@ public class SketchfabAPIManager : MonoBehaviour
 
         if (request.result != UnityWebRequest.Result.Success)
         {
-            Debug.LogError("[SketchfabAPIManager] Search failed (" + request.responseCode + "): " + request.error);
+            Debug.LogError($"[SketchfabAPIManager] Page request failed ({request.responseCode}): {request.error}");
         }
         else
         {
-            ParseResults(request.downloadHandler.text);
+            ParseResults(request.downloadHandler.text, isNewSearch);
         }
+
+        isFetchingPage = false;
     }
 
-    private void ParseResults(string json)
+    private void ParseResults(string json, bool isNewSearch)
     {
         JObject data = JObject.Parse(json);
+        
+        // Extract next page cursor URL if available
+        nextPageUrl = data["next"]?.ToString() ?? data["cursors"]?["next"]?.ToString();
+
         JArray results = (JArray)data["results"];
 
-        foreach (Transform child in resultsParent)
-            Destroy(child.gameObject);
+        if (isNewSearch)
+        {
+            ClearResults();
+        }
+
+        if (results == null || results.Count == 0)
+        {
+            Debug.Log("[SketchfabAPIManager] No models found.");
+            return;
+        }
 
         foreach (var model in results)
         {
@@ -108,6 +151,8 @@ public class SketchfabAPIManager : MonoBehaviour
                 btn.onClick.AddListener(() => OnModelSelected(capturedUid));
             }
         }
+
+        Debug.Log($"[SketchfabAPIManager] Loaded {results.Count} models. Next page available: {!string.IsNullOrEmpty(nextPageUrl)}");
     }
 
     private IEnumerator LoadThumbnail(string url, RawImage image)
@@ -118,13 +163,33 @@ public class SketchfabAPIManager : MonoBehaviour
 
             if (request.result == UnityWebRequest.Result.Success)
             {
-                if (image)
-                    image.texture = DownloadHandlerTexture.GetContent(request);
+                if (image != null)
+                {
+                    Texture2D texture = DownloadHandlerTexture.GetContent(request);
+                    image.texture = texture;
+                }
             }
             else
             {
                 Debug.LogWarning("[SketchfabAPIManager] Thumbnail load failed: " + request.error);
             }
+        }
+    }
+
+    private void ClearResults()
+    {
+        if (resultsParent == null) return;
+
+        foreach (Transform child in resultsParent)
+        {
+            var rawImg = child.GetComponentInChildren<RawImage>(true);
+            if (rawImg != null && rawImg.texture != null)
+            {
+                // Explicitly free GPU texture memory to prevent OOM on mobile
+                Destroy(rawImg.texture);
+                rawImg.texture = null;
+            }
+            Destroy(child.gameObject);
         }
     }
 

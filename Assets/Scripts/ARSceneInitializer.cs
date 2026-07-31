@@ -113,7 +113,7 @@ public class ARSceneInitializer : MonoBehaviour
         Debug.Log("[ARSceneInitializer] Model ready for AR placement.");
     }
 
-    void SetStatus(string msg)
+    public void SetStatus(string msg)
     {
         if (statusText != null)
             statusText.text = msg;
