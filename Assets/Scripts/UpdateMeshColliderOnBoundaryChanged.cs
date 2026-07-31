@@ -9,6 +9,9 @@ public class UpdateMeshColliderOnBoundaryChanged : MonoBehaviour
     MeshCollider _meshCollider;
     MeshFilter _meshFilter;
 
+    private float lastUpdateTime = 0f;
+    private const float MinUpdateInterval = 0.5f; // Throttle collider updates to max twice per second
+
     void Awake()
     {
         _plane = GetComponent<ARPlane>();
@@ -28,10 +31,13 @@ public class UpdateMeshColliderOnBoundaryChanged : MonoBehaviour
 
     void OnBoundaryChanged(ARPlaneBoundaryChangedEventArgs args)
     {
-        // Assign the latest mesh to the collider
-        if (_meshFilter != null && _meshFilter.sharedMesh != null)
+        // Throttle PhysX mesh collider baking to eliminate CPU frame spikes
+        if (Time.time - lastUpdateTime < MinUpdateInterval) return;
+
+        if (_meshFilter != null && _meshFilter.sharedMesh != null && _meshCollider != null)
         {
             _meshCollider.sharedMesh = _meshFilter.sharedMesh;
+            lastUpdateTime = Time.time;
         }
     }
 }

@@ -1,6 +1,8 @@
 using System.Collections;
 using System.IO;
 using UnityEngine;
+using UnityEngine.XR.ARFoundation;
+using UnityEngine.XR.ARSubsystems;
 using TMPro;
 
 public class ARSceneInitializer : MonoBehaviour
@@ -16,6 +18,8 @@ public class ARSceneInitializer : MonoBehaviour
         IsModelReady = false;
         SetStatus("Loading model...");
 
+        ConfigureARCamera();
+
         if (modelLoader == null)
             modelLoader = FindFirstObjectByType<ModelLoader>();
 
@@ -30,15 +34,23 @@ public class ARSceneInitializer : MonoBehaviour
 
         if (bridge != null && bridge.LoadedGltf != null)
         {
-            // Fast path — instantiate from the GltfImport already loaded in PreviewScene
             Debug.Log("[ARSceneInitializer] Instantiating from ARModelBridge.");
             yield return InstantiateFromBridge(bridge);
         }
         else
         {
-            // Fallback — re-load the GLB from disk
             Debug.Log("[ARSceneInitializer] No bridge data — loading from path.");
             yield return LoadFromPath();
+        }
+    }
+
+    private void ConfigureARCamera()
+    {
+        var cameraManager = FindFirstObjectByType<ARCameraManager>();
+        if (cameraManager != null)
+        {
+            cameraManager.autoFocusRequested = true;
+            Debug.Log("[ARSceneInitializer] Configured ARCameraManager: autoFocusRequested = true");
         }
     }
 
