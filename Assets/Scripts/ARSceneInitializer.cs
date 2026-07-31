@@ -69,6 +69,7 @@ public class ARSceneInitializer : MonoBehaviour
             yield break;
         }
 
+        GltfLoader.SanitizeMaterials(container, bridge != null ? bridge.LoadedGltf : null);
         FinishSetup(container);
     }
 

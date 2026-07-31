@@ -58,6 +58,9 @@ public class ModelLoader : MonoBehaviour
             return;
         }
 
+        // Sanitize materials to replace any missing/unsupported pink shaders on mobile
+        GltfLoader.SanitizeMaterials(container, gltf);
+
         if (LastLoadedModel != null && LastLoadedModel != _cachedModel)
             Destroy(LastLoadedModel);
 

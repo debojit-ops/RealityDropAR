@@ -98,6 +98,9 @@ public class ModelPreviewManager : MonoBehaviour
             return;
         }
 
+        // Sanitize materials to replace any missing/unsupported pink shaders on mobile
+        GltfLoader.SanitizeMaterials(loadedModel, gltf);
+
         loadedModel.transform.SetParent(modelParent, false);
         loadedModel.transform.localScale = Vector3.one;
         loadedModel.transform.localPosition = Vector3.zero;

@@ -2297,6 +2297,7 @@ GameObject:
   m_Component:
   - component: {fileID: 1258281434}
   - component: {fileID: 1258281433}
+  - component: {fileID: 1258281435}
   m_Layer: 0
   m_Name: APIManager
   m_TagString: Untagged
@@ -2316,7 +2317,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d5c08650555b5cd44942bcc111d7a23e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  apiToken: 74a53107840d4c52870087a8022d4a3c
   thumbnailPrefab: {fileID: 5502568422939316628, guid: 1c7f3d6ae2e45d64ebeb33cbf3cc8a43, type: 3}
   resultsParent: {fileID: 12224234}
 --- !u!4 &1258281434
@@ -2334,6 +2334,23 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1258281435
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1258281432}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1acc4b41a3bb58b42b0e3039178c7740, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GltfShaderPreloader
+  pbrMetallicRoughness: {fileID: 4800000, guid: 99fa998bbbed3408aafa652b466d261d, type: 3}
+  pbrSpecularGlossiness: {fileID: 4800000, guid: f853aafa0bc764a138f572608a37a73c, type: 3}
+  gltfUnlit: {fileID: 4800000, guid: 4340a3cf1cde6416d957808a6ac79eed, type: 3}
+  urpLit: {fileID: 4800000, guid: 933532a4fcc9baf4fa0491de14d08ed7, type: 3}
+  urpUnlit: {fileID: 4800000, guid: 650dd9526735d5b46b79224bc6e94025, type: 3}
 --- !u!1 &1375737368
 GameObject:
   m_ObjectHideFlags: 0
