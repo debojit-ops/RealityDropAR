@@ -21,16 +21,16 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
     public Color shadowColor = new Color(0f, 0f, 0f, 0.55f);
     public Color glowColor = new Color(0.25f, 0.85f, 1f, 0.60f);
     public Color titleColor = new Color(0.96f, 0.97f, 0.98f, 1f);
-    public Color authorColor = new Color(0.60f, 0.67f, 0.75f, 1f);
+    public Color authorColor = new Color(0.66f, 0.73f, 0.80f, 1f);
     public Color skeletonColorA = new Color(0.12f, 0.15f, 0.19f, 1f);
     public Color skeletonColorB = new Color(0.19f, 0.23f, 0.28f, 1f);
-    public Color badgeColor = new Color(0f, 0f, 0f, 0.55f);
+    public Color badgeColor = new Color(0.02f, 0.05f, 0.08f, 0.82f);
 
     [Header("Proportions (fraction of card width)")]
     public float cornerRadius = 0.09f;
     public float imageInset = 0.022f;
-    public float titleFontSize = 0.068f;
-    public float authorFontSize = 0.052f;
+    public float titleFontSize = 0.092f;
+    public float authorFontSize = 0.072f;
     public float textSideMargin = 0.055f;
     public int titleLines = 2;
 
@@ -71,10 +71,17 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
 
     // ------------------------------------------------------------------ public API
 
+    public string TitleText { get; private set; }
+    /// <summary>~1024px thumbnail used by the download screen.</summary>
+    public string HiResThumbnailUrl { get; set; }
+    public string AuthorName { get; private set; }
+
     /// <summary>Sets the text content. Author may be null/empty.</summary>
     public void SetInfo(string titleText, string authorName)
     {
         Build();
+        TitleText = titleText;
+        AuthorName = authorName;
         if (title != null) title.text = titleText;
         if (author != null) author.text = string.IsNullOrEmpty(authorName) ? string.Empty : "by " + authorName;
         if (badge != null) badge.gameObject.SetActive(true);
@@ -178,7 +185,8 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
 
         if (title != null)
         {
-            StyleText(title, titleColor, FontStyles.Bold, Mathf.Max(1, titleLines));
+            UIFonts.Apply(title, UIFonts.SemiBold);
+            StyleText(title, titleColor, FontStyles.Normal, Mathf.Max(1, titleLines));
             titleElement = GetOrAdd<LayoutElement>(title.gameObject);
             titleElement.flexibleHeight = 0f;
 
@@ -186,6 +194,7 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
             authorGO.name = "Author";
             author = authorGO.GetComponent<TextMeshProUGUI>();
             author.text = string.Empty;
+            UIFonts.Apply(author, UIFonts.Regular);
             StyleText(author, authorColor, FontStyles.Normal, 1);
             authorElement = GetOrAdd<LayoutElement>(authorGO);
             authorElement.flexibleHeight = 0f;
@@ -235,12 +244,11 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
         textRect.anchorMax = Vector2.one;
         textRect.offsetMin = textRect.offsetMax = Vector2.zero;
         badgeText = textGO.AddComponent<TextMeshProUGUI>();
-        if (title != null) badgeText.font = title.font;
+        UIFonts.Apply(badgeText, UIFonts.Display);
         badgeText.text = "FREE";
         badgeText.alignment = TextAlignmentOptions.Center;
-        badgeText.fontStyle = FontStyles.Bold;
-        badgeText.characterSpacing = 8f;
-        badgeText.color = new Color(0.55f, 0.92f, 1f, 1f);
+        badgeText.characterSpacing = 10f;
+        badgeText.color = new Color(0.70f, 0.97f, 1f, 1f);
         badgeText.raycastTarget = false;
         badgeText.textWrappingMode = TextWrappingModes.NoWrap;
     }
@@ -255,7 +263,11 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
         text.fontStyle = style;
         text.color = color;
         text.raycastTarget = false;
-        text.lineSpacing = -4f;
+        text.lineSpacing = -2f;
+        // The prefab text had -11 character spacing, which squashed letters ("by3DMAN")
+        text.characterSpacing = 0f;
+        text.wordSpacing = 0f;
+        text.fontFeatures = new System.Collections.Generic.List<UnityEngine.TextCore.OTL_FeatureTag> { UnityEngine.TextCore.OTL_FeatureTag.kern };
     }
 
     // ------------------------------------------------------------------ sizing
@@ -309,7 +321,7 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
             float pad = w * 0.035f;
             badge.sizeDelta = new Vector2(bh * 2.4f, bh);
             badge.anchoredPosition = new Vector2(pad, -pad);
-            badgeText.fontSize = bh * 0.46f;
+            badgeText.fontSize = bh * 0.58f;
             badgeShape.SetBorder(Mathf.Max(1f, w * 0.003f));
         }
 

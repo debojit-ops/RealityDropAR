@@ -1,624 +1,750 @@
-using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 
+/// <summary>
+/// Rock-solid AR placement.
+///
+/// Stability:
+///  - Placement is only allowed once tracking has been stable for a moment, and only on
+///    confirmed horizontal surfaces (inside a detected plane's polygon, never guessed planes)
+///  - The model is locked to ONE ARAnchor; while dragging it moves freely and a single new
+///    anchor is made when the finger lifts (no anchor churn, no leaks)
+///  - The model follows its anchor through a jitter dead-zone + smoothing, so tiny tracking
+///    corrections never show as shaking, and real corrections glide instead of popping
+///  - If tracking is lost the model freezes in place and the HUD asks the user to move slowly
+///
+/// Feel:
+///  - Smoothed neon reticle on the surface, scale-in animation on placement, soft contact shadow
+///  - Drag the model to move it (projected onto its floor plane: smooth even past the plane edge)
+///  - Tap another spot on the floor to glide it there; pinch to resize; twist to rotate
+///  - Surface outlines are hidden once the model is placed
+/// </summary>
 public class ModelPlacement : MonoBehaviour
 {
-    public enum PlacementState
-    {
-        Scanning,
-        SurfaceTargeted,
-        Placed
-    }
+    public enum PlacementState { Initializing, Scanning, Ready, Placed }
 
-    [Header("AR & Scene References")]
+    [Header("AR & Scene References (auto-found if empty)")]
     public ARRaycastManager raycastManager;
     public ARPlaneManager planeManager;
     public ARAnchorManager anchorManager;
     public ModelLoader modelLoader;
     public ARSceneInitializer sceneInitializer;
 
-    [Header("Reticle / Indicator")]
-    [Tooltip("Optional prefab for placement reticle. If empty, a procedural ring reticle is created automatically.")]
+    [Header("Reticle (optional prefab; a neon ring is built if empty)")]
     public GameObject reticlePrefab;
+    public float reticleDiameter = 0.3f;
 
-    [Header("Placement Configuration")]
-    [Tooltip("Target normalized initial size in meters.")]
+    [Header("Model")]
+    [Tooltip("Largest dimension of the model when first placed (meters).")]
     public float targetInitialSize = 0.5f;
-
-    [Tooltip("Minimum and maximum scale limits (meters).")]
-    public Vector2 scaleLimits = new Vector2(0.05f, 5.0f);
-
+    [Tooltip("Pinch range relative to the initial size.")]
+    public Vector2 userScaleLimits = new Vector2(0.1f, 10f);
     [Tooltip("Sensitivity for 2-finger twist rotation.")]
-    public float rotationMultiplier = 0.6f;
+    public float rotationMultiplier = 1f;
+    public LayerMask selectableLayers = ~0; // legacy
 
-    [Header("Selection & Layer Setup")]
-    public LayerMask selectableLayers = ~0;
+    [Header("Stability")]
+    [Tooltip("Seconds of continuous good tracking before placement is allowed.")]
+    public float requiredStableTracking = 0.6f;
+    [Tooltip("Smallest surface (m²) we will place on.")]
+    public float minPlaneArea = 0.04f;
+    [Tooltip("Anchor movements smaller than this (meters) are ignored as jitter.")]
+    public float jitterDeadZone = 0.003f;
+    [Tooltip("How quickly the model follows its anchor / drag target.")]
+    public float followSharpness = 18f;
 
-    // Combined trackable types for broad plane detection
-    private const TrackableType BroadPlaneTypes = TrackableType.PlaneWithinPolygon | TrackableType.PlaneWithinBounds | TrackableType.Planes;
+    // ------------------------------------------------------------------ state
 
-    // --- State Variables ---
-    public PlacementState CurrentState { get; private set; } = PlacementState.Scanning;
+    public PlacementState CurrentState { get; private set; } = PlacementState.Initializing;
     public bool IsPlaced => CurrentState == PlacementState.Placed;
+    public bool IsTrackingLost { get; private set; }
+    public bool IsPinching { get; private set; }
+    public bool IsDragging => dragging;
+    /// <summary>Current size relative to the first placement (1 = 100%).</summary>
+    public float ScaleFactor => userScale;
+    public string ModelTitle { get; set; }
 
-    private GameObject reticleInstance;
-    private Pose lastReticlePose;
-    private ARPlane lastReticlePlane;
-    private bool hasReticlePose = false;
+    public event System.Action OnPlaced;
+    public event System.Action OnUserManipulated;
 
-    private GameObject placedModel;
-    private ARAnchor currentAnchor;
     private Camera arCamera;
     private static readonly List<ARRaycastHit> hits = new List<ARRaycastHit>();
 
-    // Gesture tracking variables
-    private bool isDraggingModel = false;
-    private float startPinchDist = 0f;
-    private float startAngle = 0f;
-    private Vector3 startModelScale = Vector3.one;
-    private float groundOffsetY = 0f;
+    // Reticle
+    private GameObject reticle;
+    private Material reticleMaterial;
+    private bool hasReticlePose;
+    private Pose reticleTargetPose;
+    private ARPlane reticlePlane;
+    private float reticleVisible;
+    private float placeFlash;   // 1 → 0 after the model is placed (ring flare)
+    private float stableTrackingTime;
+    private bool hadTracking;
+
+    // Model
+    private GameObject model;
+    private Transform modelRoot;     // world pose (follows anchor), uniform user scale
+    private Transform modelPivot;    // normalized model, centered on its footprint
+    private GameObject shadow;
+    private Material shadowMaterial;
+    private ARAnchor anchor;
+    private Quaternion anchorRotationAtCreation = Quaternion.identity;
+    private float userYaw;
+    private float userScale = 1f;
+    private float appear = 1f;
+    private Vector3 followTarget;
+    private bool settled;
+
+    // Gestures
+    private bool dragging;
+    private Vector3 dragOffset;
+    private Vector2 touchStartPos;
+    private float touchStartTime;
+    private bool touchStartedOnUI;
+    private bool touchStartedOnModel;
+    private float lastPinchDistance, lastTwistAngle;
+
+    // Planes
+    private bool planesVisible = true;
+    private float planeVisibilityTimer;
+
+    // ------------------------------------------------------------------ setup
+
+    void Awake()
+    {
+        // Guard against scene setup mistakes that cause drift/jitter:
+        // only one placement script may run, and only the XR camera may render.
+        var all = FindObjectsByType<ModelPlacement>(FindObjectsSortMode.InstanceID);
+        if (all.Length > 1 && all[0] != this)
+        {
+            Debug.LogWarning("[ModelPlacement] Duplicate ModelPlacement found on '" + name + "'; disabling it.");
+            enabled = false;
+            return;
+        }
+        DisableStrayARCameras();
+    }
 
     void Start()
     {
+        if (!enabled) return;
         arCamera = Camera.main;
-
-        if (raycastManager == null)
-            raycastManager = FindFirstObjectByType<ARRaycastManager>();
-
-        if (planeManager == null)
-            planeManager = FindFirstObjectByType<ARPlaneManager>();
-
-        if (anchorManager == null)
-            anchorManager = FindFirstObjectByType<ARAnchorManager>();
-
+        if (raycastManager == null) raycastManager = FindFirstObjectByType<ARRaycastManager>();
+        if (planeManager == null) planeManager = FindFirstObjectByType<ARPlaneManager>();
+        if (anchorManager == null) anchorManager = FindFirstObjectByType<ARAnchorManager>();
         if (anchorManager == null)
         {
-            var origin = raycastManager != null ? raycastManager.gameObject : gameObject;
-            anchorManager = origin.AddComponent<ARAnchorManager>();
-            Debug.Log("[ModelPlacement] Added ARAnchorManager dynamically to " + origin.name);
+            var host = raycastManager != null ? raycastManager.gameObject : gameObject;
+            anchorManager = host.AddComponent<ARAnchorManager>();
         }
+        if (modelLoader == null) modelLoader = FindFirstObjectByType<ModelLoader>();
+        if (sceneInitializer == null) sceneInitializer = FindFirstObjectByType<ARSceneInitializer>();
 
-        if (modelLoader == null)
-            modelLoader = FindFirstObjectByType<ModelLoader>();
+        // Render in step with the camera feed (smooth AR); restored to 60 fps when leaving
+        var session = FindFirstObjectByType<ARSession>();
+        if (session != null) session.matchFrameRateRequested = true;
 
-        if (sceneInitializer == null)
-            sceneInitializer = FindFirstObjectByType<ARSceneInitializer>();
+        // Floors and tables only (no walls): fewer, cleaner glowing panels and faster detection
+        if (planeManager != null) planeManager.requestedDetectionMode = PlaneDetectionMode.Horizontal;
+        ARGlowPlane.Visible = true;
 
-        InitializeReticle();
-        SetState(PlacementState.Scanning);
-        Debug.Log("[ModelPlacement] Anti-Drift AR placement system initialized.");
+        CreateReticle();
+        SetState(PlacementState.Initializing);
     }
+
+    void OnDestroy()
+    {
+        if (reticleMaterial != null) Destroy(reticleMaterial);
+        if (shadowMaterial != null) Destroy(shadowMaterial);
+        AppPerformanceManager.InitializePerformanceSettings(); // back to 60 fps outside AR
+    }
+
+    private void DisableStrayARCameras()
+    {
+        var origin = FindFirstObjectByType<Unity.XR.CoreUtils.XROrigin>();
+        Camera xrCam = origin != null ? origin.Camera : Camera.main;
+        foreach (var bg in FindObjectsByType<ARCameraBackground>(FindObjectsSortMode.None))
+        {
+            var cam = bg.GetComponent<Camera>();
+            if (cam != null && cam != xrCam)
+            {
+                Debug.LogWarning("[ModelPlacement] Extra AR camera on '" + cam.name + "' disabled (it caused drift).");
+                bg.enabled = false;
+                cam.enabled = false;
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ public API
+
+    /// <summary>Places (or moves) the model at the reticle. Used by the PLACE button.</summary>
+    public void PlaceAtReticle()
+    {
+        if (!hasReticlePose || CurrentState != PlacementState.Ready && CurrentState != PlacementState.Placed) return;
+        PlaceAt(reticleTargetPose, reticlePlane);
+    }
+
+    /// <summary>Legacy name used by the old Spawn button.</summary>
+    public void OnSpawnButtonPressed() => PlaceAtReticle();
+
+    /// <summary>Removes the model so the user can scan and place again.</summary>
+    public void ResetPlacement()
+    {
+        RemoveAnchor();
+        dragging = false;
+        if (modelRoot != null) modelRoot.gameObject.SetActive(false);
+        userScale = 1f;
+        SetState(PlacementState.Scanning);
+    }
+
+    // ------------------------------------------------------------------ frame loop
 
     void Update()
     {
-        // 1. Update reticle raycast from screen center
-        UpdateReticle();
+        if (arCamera == null) arCamera = Camera.main;
+        float dt = Time.deltaTime;
 
-        // 2. Handle Touch Inputs
-        if (Input.touchCount == 0) return;
+        bool sessionTracking = ARSession.state == ARSessionState.SessionTracking &&
+                               ARSession.notTrackingReason == NotTrackingReason.None;
+        stableTrackingTime = sessionTracking ? stableTrackingTime + dt : 0f;
+        if (sessionTracking) hadTracking = true;
+        bool anchorOk = anchor == null || anchor.trackingState == TrackingState.Tracking;
+        // Placed: the model freezes while lost. Before placing: only "lost" after tracking had started.
+        IsTrackingLost = CurrentState == PlacementState.Placed ? (!sessionTracking || !anchorOk)
+                                                               : (hadTracking && !sessionTracking);
 
-        // Two-finger gestures: Pinch Scale & Twist Rotate when placed
-        if (Input.touchCount == 2 && IsPlaced && placedModel != null)
+        UpdateReticle(sessionTracking, dt);
+        HandleInput();
+        UpdatePlaneVisibility(dt);
+
+        if (CurrentState == PlacementState.Initializing && GetModel() != null && stableTrackingTime > 0f)
+            SetState(PlacementState.Scanning);
+    }
+
+    void LateUpdate()
+    {
+        if (CurrentState != PlacementState.Placed || modelRoot == null) return;
+        float dt = Time.deltaTime;
+
+        // Where the model should be: the drag point, or its anchor (frozen while tracking is lost)
+        if (!dragging && anchor != null && !IsTrackingLost)
         {
-            HandleTwoFingerGestures();
+            followTarget = anchor.transform.position;
+        }
+
+        Vector3 delta = followTarget - modelRoot.position;
+        float dist = delta.magnitude;
+        if (dragging || !settled || dist > jitterDeadZone)
+        {
+            modelRoot.position = Vector3.Lerp(modelRoot.position, followTarget, 1f - Mathf.Exp(-followSharpness * dt));
+            settled = !dragging && (followTarget - modelRoot.position).magnitude < jitterDeadZone * 0.5f;
+        }
+
+        // Rotation: user yaw, plus any drift correction the anchor itself applies (yaw only)
+        Quaternion anchorDelta = anchor != null && !IsTrackingLost
+            ? anchor.transform.rotation * Quaternion.Inverse(anchorRotationAtCreation)
+            : Quaternion.identity;
+        float anchorYaw = anchorDelta.eulerAngles.y;
+        Quaternion targetRot = Quaternion.Euler(0f, userYaw + anchorYaw, 0f);
+        modelRoot.rotation = Quaternion.Slerp(modelRoot.rotation, targetRot, 1f - Mathf.Exp(-followSharpness * dt));
+
+        // Scale (with pop-in on placement)
+        if (appear < 1f) appear = Mathf.Min(1f, appear + dt / 0.45f);
+        float pop = EaseOutBack(appear);
+        float s = userScale * Mathf.Max(0.001f, pop);
+        modelRoot.localScale = Vector3.Lerp(modelRoot.localScale, Vector3.one * s, appear < 1f ? 1f : 1f - Mathf.Exp(-20f * dt));
+    }
+
+    // ------------------------------------------------------------------ reticle
+
+    private void UpdateReticle(bool sessionTracking, float dt)
+    {
+        bool searching = CurrentState == PlacementState.Scanning || CurrentState == PlacementState.Ready;
+        bool found = false;
+
+        if (searching && sessionTracking && arCamera != null &&
+            TryRaycastSurface(new Vector2(Screen.width * 0.5f, Screen.height * 0.5f), out Pose pose, out ARPlane plane))
+        {
+            found = true;
+            // Face the user: yaw towards the camera, flat on the surface
+            Vector3 toCam = arCamera.transform.position - pose.position;
+            toCam.y = 0f;
+            Quaternion facing = toCam.sqrMagnitude > 1e-4f ? Quaternion.LookRotation(-toCam.normalized, Vector3.up) : Quaternion.identity;
+            reticleTargetPose = new Pose(pose.position, facing);
+            reticlePlane = plane;
+        }
+
+        hasReticlePose = found;
+        bool ready = found && stableTrackingTime >= requiredStableTracking && GetModel() != null;
+        if (searching) SetState(ready ? PlacementState.Ready : PlacementState.Scanning);
+
+        if (reticle == null) return;
+
+        // Placement flash: the ring stays where the model landed, flares and expands, then fades out
+        if (placeFlash > 0f)
+        {
+            placeFlash = Mathf.Max(0f, placeFlash - dt / 0.7f);
+            float p = 1f - placeFlash; // 0 → 1
+            reticle.SetActive(placeFlash > 0f);
+            reticle.transform.localScale = Vector3.one * reticleDiameter * Mathf.Lerp(1f, 1.6f, EaseOutCubic(p));
+            if (reticleMaterial != null)
+            {
+                reticleMaterial.SetFloat("_GlowStrength", 1.4f * placeFlash);
+                reticleMaterial.SetColor("_RingColor", new Color(0.30f, 0.88f, 1f, 1f) * placeFlash);
+                reticleMaterial.SetFloat("_PlatformAlpha", 0.25f * placeFlash);
+            }
+            reticleVisible = 0f;
             return;
         }
 
-        // Single-finger gestures: Placement / Tap / Drag Reposition
-        if (Input.touchCount == 1)
+        // Smooth reticle motion (no shaking), fade/scale in and out
+        reticleVisible = Mathf.MoveTowards(reticleVisible, searching && found ? 1f : 0f, dt * 5f);
+        reticle.SetActive(reticleVisible > 0.001f);
+        if (found)
         {
-            Touch touch = Input.GetTouch(0);
-
-            // Filter out touches directly over UI buttons
-            if (IsPointerOverUI(touch)) return;
-
-            if (CurrentState == PlacementState.Scanning || CurrentState == PlacementState.SurfaceTargeted)
-            {
-                if (touch.phase == TouchPhase.Began)
-                {
-                    Debug.Log($"[ModelPlacement] Screen tap detected at {touch.position}. Attempting placement.");
-                    TryPlaceModelFromTouch(touch.position);
-                }
-            }
-            else if (IsPlaced && placedModel != null)
-            {
-                HandleSingleFingerDrag(touch);
-            }
-        }
-    }
-
-    #region Reticle System
-
-    private void InitializeReticle()
-    {
-        if (reticlePrefab != null)
-        {
-            reticleInstance = Instantiate(reticlePrefab);
-        }
-        else
-        {
-            reticleInstance = CreateProceduralReticle();
-        }
-
-        if (reticleInstance != null)
-        {
-            reticleInstance.name = "AR_Placement_Reticle";
-            reticleInstance.SetActive(false);
-        }
-    }
-
-    private GameObject CreateProceduralReticle()
-    {
-        GameObject container = new GameObject("ProceduralReticle");
-        
-        LineRenderer line = container.AddComponent<LineRenderer>();
-        line.useWorldSpace = false;
-        line.loop = true;
-        line.startWidth = 0.02f;
-        line.endWidth = 0.02f;
-        line.positionCount = 40;
-
-        float radius = 0.25f;
-        for (int i = 0; i < 40; i++)
-        {
-            float angle = i * (Mathf.PI * 2f / 40);
-            line.SetPosition(i, new Vector3(Mathf.Cos(angle) * radius, 0.002f, Mathf.Sin(angle) * radius));
-        }
-
-        Shader unlitShader = Shader.Find("Universal Render Pipeline/Unlit") 
-                          ?? Shader.Find("Unlit/Color") 
-                          ?? Shader.Find("Sprites/Default");
-        Material mat = new Material(unlitShader);
-        if (mat.HasProperty("_Color")) mat.SetColor("_Color", new Color(0.1f, 0.85f, 1.0f, 0.9f));
-        if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", new Color(0.1f, 0.85f, 1.0f, 0.9f));
-        line.material = mat;
-
-        GameObject dot = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-        dot.transform.SetParent(container.transform, false);
-        dot.transform.localScale = new Vector3(0.05f, 0.001f, 0.05f);
-        if (dot.TryGetComponent<Collider>(out var col)) Destroy(col);
-        if (dot.TryGetComponent<Renderer>(out var dotRend)) dotRend.material = mat;
-
-        return container;
-    }
-
-    private void UpdateReticle()
-    {
-        if (IsPlaced)
-        {
-            if (reticleInstance != null && reticleInstance.activeSelf)
-                reticleInstance.SetActive(false);
-            return;
-        }
-
-        Vector2 screenCenter = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
-
-        if (raycastManager != null && raycastManager.Raycast(screenCenter, hits, BroadPlaneTypes))
-        {
-            lastReticlePose = hits[0].pose;
-            lastReticlePlane = planeManager != null ? planeManager.GetPlane(hits[0].trackableId) : null;
-            hasReticlePose = true;
-
-            if (reticleInstance != null)
-            {
-                reticleInstance.transform.position = lastReticlePose.position;
-                reticleInstance.transform.rotation = lastReticlePose.rotation;
-                if (!reticleInstance.activeSelf) reticleInstance.SetActive(true);
-            }
-
-            if (CurrentState != PlacementState.SurfaceTargeted)
-                SetState(PlacementState.SurfaceTargeted);
-        }
-        else
-        {
-            hasReticlePose = false;
-            lastReticlePlane = null;
-            if (reticleInstance != null && reticleInstance.activeSelf)
-                reticleInstance.SetActive(false);
-
-            if (CurrentState != PlacementState.Scanning)
-                SetState(PlacementState.Scanning);
-        }
-    }
-
-    #endregion
-
-    #region Model Placement & AR Anchor System (Anti-Drift)
-
-    public void OnSpawnButtonPressed()
-    {
-        Debug.Log("[ModelPlacement] Spawn Button Pressed.");
-
-        GameObject modelToPlace = GetAvailableModel();
-        if (modelToPlace == null)
-        {
-            Debug.LogError("[ModelPlacement] Spawn pressed but model is null!");
-            if (sceneInitializer != null) sceneInitializer.SetStatus("Error: Model not ready.");
-            return;
-        }
-
-        if (IsPlaced)
-        {
-            if (hasReticlePose)
-            {
-                RepositionPlacedModel(lastReticlePose, lastReticlePlane);
-            }
+            float k = 1f - Mathf.Exp(-14f * dt);
+            if (reticleVisible < 0.05f)
+                reticle.transform.SetPositionAndRotation(reticleTargetPose.position, reticleTargetPose.rotation);
             else
-            {
-                Pose cameraFallback = GetCameraFallbackPose();
-                RepositionPlacedModel(cameraFallback, null);
-            }
-            return;
+                reticle.transform.SetPositionAndRotation(
+                    Vector3.Lerp(reticle.transform.position, reticleTargetPose.position, k),
+                    Quaternion.Slerp(reticle.transform.rotation, reticleTargetPose.rotation, k));
         }
-
-        // Primary: Place at active reticle pose
-        if (hasReticlePose)
+        reticle.transform.localScale = Vector3.one * reticleDiameter * Mathf.Lerp(0.6f, 1f, EaseOutCubic(reticleVisible));
+        if (reticleMaterial != null)
         {
-            Debug.Log($"[ModelPlacement] Spawning anchored model at reticle pose: {lastReticlePose.position}");
-            PlaceModelAtPose(lastReticlePose, lastReticlePlane);
-            return;
-        }
-
-        // Secondary: Center screen raycast
-        Vector2 screenCenter = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
-        if (raycastManager != null && raycastManager.Raycast(screenCenter, hits, BroadPlaneTypes))
-        {
-            ARPlane hitPlane = planeManager != null ? planeManager.GetPlane(hits[0].trackableId) : null;
-            Debug.Log($"[ModelPlacement] Spawning anchored model via center screen raycast at: {hits[0].pose.position}");
-            PlaceModelAtPose(hits[0].pose, hitPlane);
-            return;
-        }
-
-        // Tertiary (Guaranteed Fallback): Place 1.5 meters directly in front of camera
-        Debug.Log("[ModelPlacement] No planes hit — placing model using camera forward fallback pose.");
-        Pose fallbackPose = GetCameraFallbackPose();
-        PlaceModelAtPose(fallbackPose, null);
-    }
-
-    private void TryPlaceModelFromTouch(Vector2 touchPosition)
-    {
-        GameObject modelToPlace = GetAvailableModel();
-        if (modelToPlace == null) return;
-
-        if (raycastManager != null && raycastManager.Raycast(touchPosition, hits, BroadPlaneTypes))
-        {
-            ARPlane hitPlane = planeManager != null ? planeManager.GetPlane(hits[0].trackableId) : null;
-            Debug.Log($"[ModelPlacement] Touch hit plane at {hits[0].pose.position}. Placing anchored model.");
-            PlaceModelAtPose(hits[0].pose, hitPlane);
-            return;
-        }
-
-        if (hasReticlePose)
-        {
-            Debug.Log($"[ModelPlacement] Touch missed plane, fallback to reticle pose at {lastReticlePose.position}.");
-            PlaceModelAtPose(lastReticlePose, lastReticlePlane);
-            return;
-        }
-
-        Debug.Log("[ModelPlacement] Touch placement fallback — placing in front of camera.");
-        PlaceModelAtPose(GetCameraFallbackPose(), null);
-    }
-
-    private GameObject GetAvailableModel()
-    {
-        if (modelLoader != null && modelLoader.LastLoadedModel != null)
-            return modelLoader.LastLoadedModel;
-
-        var bridge = ARModelBridge.Instance;
-        if (bridge != null && bridge.LoadedGltf != null)
-        {
-            var found = GameObject.Find("LoadedModel");
-            if (found != null) return found;
-        }
-
-        return null;
-    }
-
-    private Pose GetCameraFallbackPose()
-    {
-        if (arCamera == null) arCamera = Camera.main;
-
-        Vector3 camPos = arCamera != null ? arCamera.transform.position : Vector3.zero;
-        Vector3 camForward = arCamera != null ? arCamera.transform.forward : Vector3.forward;
-
-        Vector3 targetPos = camPos + (camForward * 1.5f);
-        targetPos.y = camPos.y - 0.5f;
-
-        Quaternion targetRot = Quaternion.Euler(0, arCamera != null ? arCamera.transform.eulerAngles.y : 0, 0);
-        return new Pose(targetPos, targetRot);
-    }
-
-    private void PlaceModelAtPose(Pose pose, ARPlane plane)
-    {
-        placedModel = GetAvailableModel();
-        if (placedModel == null)
-        {
-            Debug.LogError("[ModelPlacement] Cannot place model — model reference is null!");
-            return;
-        }
-
-        placedModel.SetActive(true);
-
-        // Normalize initial scale & ground boundary offset
-        NormalizeScaleAndCalculateGroundOffset(placedModel);
-
-        // Attach ARAnchor to prevent drifting
-        AttachModelToAnchor(placedModel, pose, plane);
-
-        // Ensure lightweight root collider exists for touch dragging
-        AddSingleRootCollider(placedModel);
-
-        SetState(PlacementState.Placed);
-        Debug.Log($"[ModelPlacement] Model anchored & placed at {pose.position}");
-    }
-
-    private void RepositionPlacedModel(Pose pose, ARPlane plane)
-    {
-        if (placedModel == null) return;
-        AttachModelToAnchor(placedModel, pose, plane);
-        Debug.Log($"[ModelPlacement] Model re-anchored to {pose.position}");
-    }
-
-    private void AttachModelToAnchor(GameObject model, Pose pose, ARPlane plane)
-    {
-        // Destroy existing anchor if present
-        if (currentAnchor != null)
-        {
-            Destroy(currentAnchor);
-            currentAnchor = null;
-        }
-
-        // 1. Try attaching anchor to ARPlane
-        if (anchorManager != null && plane != null)
-        {
-            currentAnchor = anchorManager.AttachAnchor(plane, pose);
-        }
-
-        // 2. Fallback: Create free-standing ARAnchor at pose for ARFoundation 5/6
-        if (currentAnchor == null)
-        {
-            GameObject anchorGO = new GameObject("ARAnchor_GameObject");
-            anchorGO.transform.position = pose.position;
-            anchorGO.transform.rotation = pose.rotation;
-            currentAnchor = anchorGO.AddComponent<ARAnchor>();
-        }
-
-        // Position offset calculation for floor ground alignment
-        Vector3 modelOffset = Vector3.up * (groundOffsetY * model.transform.localScale.y);
-        Quaternion uprightRot = Quaternion.Euler(0, pose.rotation.eulerAngles.y, 0);
-
-        if (currentAnchor != null)
-        {
-            model.transform.SetParent(currentAnchor.transform, false);
-            model.transform.localPosition = modelOffset;
-            model.transform.localRotation = uprightRot;
-            Debug.Log("[ModelPlacement] Attached model under physical ARAnchor.");
-        }
-        else
-        {
-            model.transform.SetParent(null, true);
-            model.transform.position = pose.position + modelOffset;
-            model.transform.rotation = uprightRot;
-            Debug.LogWarning("[ModelPlacement] Placed model without ARAnchor (fallback).");
+            // Same neon turntable ring as the preview screen: grey while finding a spot, cyan when ready
+            float t = Time.unscaledTime;
+            reticleMaterial.SetFloat("_Pulse", 0.5f + 0.5f * Mathf.Sin(t * 3f));
+            reticleMaterial.SetFloat("_GlowStrength", (ready ? 0.9f : 0.35f) * reticleVisible);
+            reticleMaterial.SetColor("_RingColor", ready ? new Color(0.30f, 0.88f, 1f, 1f) * reticleVisible
+                                                         : new Color(0.55f, 0.65f, 0.72f, 1f) * reticleVisible);
+            reticleMaterial.SetFloat("_PlatformAlpha", (ready ? 0.35f : 0.1f) * reticleVisible);
         }
     }
 
-    private void NormalizeScaleAndCalculateGroundOffset(GameObject model)
+    /// <summary>Raycast against confirmed horizontal, upward-facing surfaces only.</summary>
+    private bool TryRaycastSurface(Vector2 screenPoint, out Pose pose, out ARPlane plane)
     {
-        model.transform.localScale = Vector3.one;
+        pose = default;
+        plane = null;
+        if (raycastManager == null || !raycastManager.Raycast(screenPoint, hits, TrackableType.PlaneWithinPolygon))
+            return false;
 
-        var renderers = model.GetComponentsInChildren<Renderer>(true);
-        if (renderers.Length == 0)
+        foreach (var hit in hits)
         {
-            groundOffsetY = 0f;
-            return;
+            var p = planeManager != null ? planeManager.GetPlane(hit.trackableId) : null;
+            if (p == null) continue;
+            if (p.alignment != PlaneAlignment.HorizontalUp) continue;
+            if (p.trackingState != TrackingState.Tracking) continue;
+            if (p.size.x * p.size.y < minPlaneArea) continue;
+            pose = hit.pose;
+            plane = p;
+            return true;
         }
-
-        Vector3 min = Vector3.one * float.MaxValue;
-        Vector3 max = Vector3.one * float.MinValue;
-
-        foreach (var r in renderers)
-        {
-            r.enabled = true;
-            Bounds wb = r.bounds;
-            Vector3 c = wb.center, e = wb.extents;
-            Vector3[] corners = {
-                new Vector3(c.x+e.x, c.y+e.y, c.z+e.z), new Vector3(c.x+e.x, c.y+e.y, c.z-e.z),
-                new Vector3(c.x+e.x, c.y-e.y, c.z+e.z), new Vector3(c.x+e.x, c.y-e.y, c.z-e.z),
-                new Vector3(c.x-e.x, c.y+e.y, c.z+e.z), new Vector3(c.x-e.x, c.y+e.y, c.z-e.z),
-                new Vector3(c.x-e.x, c.y-e.y, c.z+e.z), new Vector3(c.x-e.x, c.y-e.y, c.z-e.z)
-            };
-            foreach (var corner in corners)
-            {
-                Vector3 lp = model.transform.InverseTransformPoint(corner);
-                min = Vector3.Min(min, lp);
-                max = Vector3.Max(max, lp);
-            }
-        }
-
-        Vector3 localSize = max - min;
-        float maxDim = Mathf.Max(localSize.x, localSize.y, localSize.z);
-
-        if (maxDim > 0f)
-        {
-            float desiredScale = targetInitialSize / maxDim;
-            model.transform.localScale = Vector3.one * desiredScale;
-        }
-
-        groundOffsetY = -min.y;
-    }
-
-    #endregion
-
-    #region Gesture Manipulations (Drag, Pinch Scale, Twist Rotate)
-
-    private void HandleSingleFingerDrag(Touch touch)
-    {
-        if (touch.phase == TouchPhase.Began)
-        {
-            isDraggingModel = TouchHitsPlacedModel(touch.position);
-            Debug.Log($"[ModelPlacement] Single touch Began. Touch hits model = {isDraggingModel}");
-        }
-        else if ((touch.phase == TouchPhase.Moved || touch.phase == TouchPhase.Stationary) && isDraggingModel)
-        {
-            if (raycastManager != null && raycastManager.Raycast(touch.position, hits, BroadPlaneTypes))
-            {
-                Pose hitPose = hits[0].pose;
-                ARPlane hitPlane = planeManager != null ? planeManager.GetPlane(hits[0].trackableId) : null;
-                RepositionPlacedModel(hitPose, hitPlane);
-            }
-        }
-        else if (touch.phase == TouchPhase.Ended || touch.phase == TouchPhase.Canceled)
-        {
-            isDraggingModel = false;
-        }
-    }
-
-    private void HandleTwoFingerGestures()
-    {
-        Touch t0 = Input.GetTouch(0);
-        Touch t1 = Input.GetTouch(1);
-
-        if (t0.phase == TouchPhase.Began || t1.phase == TouchPhase.Began)
-        {
-            startPinchDist = Vector2.Distance(t0.position, t1.position);
-            startAngle = Vector2.SignedAngle(t1.position - t0.position, Vector2.right);
-            startModelScale = placedModel.transform.localScale;
-            return;
-        }
-
-        float currentDist = Vector2.Distance(t0.position, t1.position);
-        float currentAngle = Vector2.SignedAngle(t1.position - t0.position, Vector2.right);
-
-        // 1. Pinch to Scale
-        if (startPinchDist > 0.01f)
-        {
-            float scaleFactor = currentDist / startPinchDist;
-            Vector3 targetScale = startModelScale * scaleFactor;
-            float clampedFactor = Mathf.Clamp(targetScale.x, scaleLimits.x, scaleLimits.y);
-            placedModel.transform.localScale = Vector3.one * clampedFactor;
-        }
-
-        // 2. Twist to Rotate
-        float deltaAngle = Mathf.DeltaAngle(startAngle, currentAngle);
-        placedModel.transform.Rotate(Vector3.up, -deltaAngle * rotationMultiplier, Space.World);
-
-        // Refresh base gesture values
-        startPinchDist = currentDist;
-        startAngle = currentAngle;
-        startModelScale = placedModel.transform.localScale;
-    }
-
-    private bool TouchHitsPlacedModel(Vector2 screenPos)
-    {
-        if (arCamera == null) arCamera = Camera.main;
-        if (arCamera == null || placedModel == null) return false;
-
-        // 1. Physics Raycast Pick
-        Ray ray = arCamera.ScreenPointToRay(screenPos);
-        if (Physics.Raycast(ray, out RaycastHit hit, 100f, selectableLayers))
-        {
-            if (hit.transform == placedModel.transform || hit.transform.IsChildOf(placedModel.transform))
-                return true;
-        }
-
-        // 2. Fallback: Proximity distance pick on screen
-        Vector3 modelScreenPos = arCamera.WorldToScreenPoint(placedModel.transform.position);
-        if (modelScreenPos.z > 0)
-        {
-            float dist = Vector2.Distance(screenPos, new Vector2(modelScreenPos.x, modelScreenPos.y));
-            if (dist < 200f) // Touch within 200 pixels of model screen center
-                return true;
-        }
-
         return false;
     }
 
-    private void AddSingleRootCollider(GameObject root)
+    // ------------------------------------------------------------------ placement
+
+    private void PlaceAt(Pose pose, ARPlane plane)
     {
-        if (root == null) return;
-        if (root.GetComponent<Collider>() != null || root.GetComponentInChildren<Collider>() != null) return;
-
-        var renderers = root.GetComponentsInChildren<Renderer>(true);
-        if (renderers.Length == 0) return;
-
-        Vector3 min = Vector3.one * float.MaxValue;
-        Vector3 max = Vector3.one * float.MinValue;
-
-        foreach (var r in renderers)
+        GameObject m = GetModel();
+        if (m == null)
         {
-            Bounds wb = r.bounds;
-            Vector3 c = wb.center, e = wb.extents;
-            Vector3[] corners = {
-                new Vector3(c.x+e.x, c.y+e.y, c.z+e.z), new Vector3(c.x+e.x, c.y+e.y, c.z-e.z),
-                new Vector3(c.x+e.x, c.y-e.y, c.z+e.z), new Vector3(c.x+e.x, c.y-e.y, c.z-e.z),
-                new Vector3(c.x-e.x, c.y+e.y, c.z+e.z), new Vector3(c.x-e.x, c.y+e.y, c.z-e.z),
-                new Vector3(c.x-e.x, c.y-e.y, c.z+e.z), new Vector3(c.x-e.x, c.y-e.y, c.z-e.z)
-            };
-            foreach (var corner in corners)
+            if (sceneInitializer != null) sceneInitializer.SetStatus("Model not ready yet.");
+            return;
+        }
+
+        bool firstTime = modelRoot == null || !modelRoot.gameObject.activeSelf;
+        PrepareModel(m);
+
+        if (firstTime)
+        {
+            // Face the user, appear right on the spot with a pop
+            Vector3 toCam = arCamera != null ? arCamera.transform.position - pose.position : Vector3.back;
+            toCam.y = 0f;
+            userYaw = toCam.sqrMagnitude > 1e-4f ? Quaternion.LookRotation(toCam.normalized, Vector3.up).eulerAngles.y : 0f;
+            modelRoot.gameObject.SetActive(true);
+            modelRoot.SetPositionAndRotation(pose.position, Quaternion.Euler(0f, userYaw, 0f));
+            modelRoot.localScale = Vector3.one * 0.001f;
+            appear = 0f;
+        }
+
+        CreateAnchor(pose.position, plane);
+        followTarget = pose.position;
+        settled = false;
+        SetState(PlacementState.Placed);
+        if (firstTime)
+        {
+            // Ring flares at the exact spot as the model drops onto it
+            if (reticle != null) reticle.transform.SetPositionAndRotation(pose.position, reticle.transform.rotation);
+            placeFlash = 1f;
+            OnPlaced?.Invoke();
+        }
+    }
+
+    /// <summary>Wraps the loaded model: normalized size, centered over its footprint, contact shadow.</summary>
+    private void PrepareModel(GameObject m)
+    {
+        if (modelRoot != null && model == m) return;
+        model = m;
+
+        modelRoot = new GameObject("ARModelRoot").transform;
+        modelPivot = new GameObject("Pivot").transform;
+        modelPivot.SetParent(modelRoot, false);
+
+        m.SetActive(true);
+        m.transform.SetParent(null, true);
+        m.transform.localScale = Vector3.one;
+        m.transform.rotation = Quaternion.identity;
+        m.transform.position = Vector3.zero;
+
+        Bounds b = WorldBounds(m);
+        float maxDim = Mathf.Max(b.size.x, b.size.y, b.size.z);
+        float baseScale = maxDim > 1e-5f ? targetInitialSize / maxDim : 1f;
+
+        m.transform.SetParent(modelPivot, false);
+        m.transform.localScale = Vector3.one * baseScale;
+        m.transform.localRotation = Quaternion.identity;
+        // Bottom-center of the model sits exactly on the anchor point
+        Vector3 bottomCenter = new Vector3(b.center.x, b.min.y, b.center.z) * baseScale;
+        m.transform.localPosition = -bottomCenter;
+
+        foreach (var r in m.GetComponentsInChildren<Renderer>(true)) r.enabled = true;
+
+        // Soft contact shadow (grounds the model visually)
+        var shader = Resources.Load<Shader>("RealityDropUI/Turntable");
+        if (shader != null)
+        {
+            shadow = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            shadow.name = "ContactShadow";
+            Destroy(shadow.GetComponent<Collider>());
+            shadowMaterial = new Material(shader);
+            shadowMaterial.SetColor("_RingColor", Color.black); // no ring, shadow only
+            shadowMaterial.SetFloat("_GlowStrength", 0f);
+            shadowMaterial.SetFloat("_PlatformAlpha", 0f);
+            shadowMaterial.SetFloat("_ShadowAlpha", 0.55f);
+            shadowMaterial.SetFloat("_ShadowRadius", 0.85f);
+            var sr = shadow.GetComponent<MeshRenderer>();
+            sr.sharedMaterial = shadowMaterial;
+            sr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            sr.receiveShadows = false;
+            shadow.transform.SetParent(modelRoot, false);
+            shadow.transform.localPosition = new Vector3(0f, 0.002f, 0f);
+            shadow.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+            float footprint = Mathf.Max(b.size.x, b.size.z) * baseScale;
+            shadow.transform.localScale = new Vector3(footprint * 1.5f, footprint * 1.5f, 1f);
+        }
+    }
+
+    private void CreateAnchor(Vector3 position, ARPlane plane)
+    {
+        RemoveAnchor();
+        var pose = new Pose(position, Quaternion.identity);
+        ARAnchor created = null;
+
+        if (anchorManager != null && plane != null)
+            created = anchorManager.AttachAnchor(plane, pose);
+
+        if (created == null)
+        {
+            // No plane under it: a world anchor is still far more stable than no anchor
+            var go = new GameObject("ARAnchor");
+            go.transform.SetPositionAndRotation(pose.position, pose.rotation);
+            created = go.AddComponent<ARAnchor>();
+        }
+
+        anchor = created;
+        anchorRotationAtCreation = anchor != null ? anchor.transform.rotation : Quaternion.identity;
+    }
+
+    private void RemoveAnchor()
+    {
+        if (anchor == null) return;
+        Destroy(anchor.gameObject); // removes the anchor and its GameObject (no leaks)
+        anchor = null;
+    }
+
+    // ------------------------------------------------------------------ gestures
+
+    private void HandleInput()
+    {
+        if (Input.touchCount == 0)
+        {
+            if (dragging) EndDrag();
+            IsPinching = false;
+            lastPinchDistance = 0f;
+            HandleEditorMouse();
+            return;
+        }
+
+        if (Input.touchCount >= 2)
+        {
+            if (dragging) EndDrag();
+            if (IsPlaced) HandleTwoFingers();
+            return;
+        }
+
+        IsPinching = false;
+        lastPinchDistance = 0f;
+        Touch t = Input.GetTouch(0);
+        switch (t.phase)
+        {
+            case TouchPhase.Began:
+                touchStartPos = t.position;
+                touchStartTime = Time.unscaledTime;
+                touchStartedOnUI = IsOverUI(t.fingerId);
+                touchStartedOnModel = !touchStartedOnUI && IsPlaced && TouchHitsModel(t.position);
+                if (touchStartedOnModel) BeginDrag(t.position);
+                break;
+            case TouchPhase.Moved:
+            case TouchPhase.Stationary:
+                if (dragging) UpdateDrag(t.position);
+                break;
+            case TouchPhase.Ended:
+                if (dragging) { EndDrag(); break; }
+                if (!touchStartedOnUI) HandleTap(t.position);
+                break;
+            case TouchPhase.Canceled:
+                if (dragging) EndDrag();
+                break;
+        }
+    }
+
+    // Mouse support for testing with XR Simulation in the editor
+    private void HandleEditorMouse()
+    {
+        if (!Application.isEditor) return;
+        if (Input.GetMouseButtonDown(0))
+        {
+            touchStartPos = Input.mousePosition;
+            touchStartTime = Time.unscaledTime;
+            touchStartedOnUI = IsOverUI(-1);
+            touchStartedOnModel = !touchStartedOnUI && IsPlaced && TouchHitsModel(Input.mousePosition);
+            if (touchStartedOnModel) BeginDrag(Input.mousePosition);
+        }
+        else if (Input.GetMouseButton(0) && dragging) UpdateDrag(Input.mousePosition);
+        else if (Input.GetMouseButtonUp(0))
+        {
+            if (dragging) EndDrag();
+            else if (!touchStartedOnUI) HandleTap(Input.mousePosition);
+        }
+    }
+
+    private void HandleTap(Vector2 position)
+    {
+        bool quick = Time.unscaledTime - touchStartTime < 0.35f && (position - touchStartPos).magnitude < 25f;
+        if (!quick) return;
+
+        // Before placing: the glowing ring is the indicator and only the PLACE MODEL button places,
+        // so a stray tap never drops the model somewhere unexpected.
+        if (IsPlaced && !touchStartedOnModel)
+        {
+            // Tap another spot on the floor: glide the model there
+            if (TryRaycastSurface(position, out Pose pose, out ARPlane plane))
             {
-                Vector3 lp = root.transform.InverseTransformPoint(corner);
-                min = Vector3.Min(min, lp);
-                max = Vector3.Max(max, lp);
+                PlaceAt(pose, plane);
+                OnUserManipulated?.Invoke();
             }
         }
-
-        BoxCollider box = root.AddComponent<BoxCollider>();
-        box.center = (min + max) * 0.5f;
-        box.size = max - min;
-        Debug.Log($"[ModelPlacement] Added lightweight root BoxCollider (Center: {box.center}, Size: {box.size})");
     }
 
-    #endregion
-
-    #region Helper Methods & UI
-
-    private bool IsPointerOverUI(Touch touch)
+    private void BeginDrag(Vector2 screenPos)
     {
-        if (EventSystem.current == null) return false;
-        return EventSystem.current.IsPointerOverGameObject(touch.fingerId);
+        if (!ScreenToFloor(screenPos, out Vector3 floorPoint)) return;
+        dragging = true;
+        dragOffset = modelRoot.position - floorPoint;
+        followTarget = modelRoot.position;
+        OnUserManipulated?.Invoke();
     }
 
-    private void SetState(PlacementState newState)
+    private void UpdateDrag(Vector2 screenPos)
     {
-        CurrentState = newState;
+        if (ScreenToFloor(screenPos, out Vector3 floorPoint))
+            followTarget = floorPoint + dragOffset;
+    }
 
+    private void EndDrag()
+    {
+        dragging = false;
+        if (modelRoot == null) return;
+        // One anchor at the final spot (attach to the surface under it when possible)
+        Vector2 screen = arCamera != null ? (Vector2)arCamera.WorldToScreenPoint(followTarget) : Vector2.zero;
+        ARPlane plane = null;
+        Vector3 pos = followTarget;
+        if (TryRaycastSurface(screen, out Pose pose, out ARPlane p))
+        {
+            plane = p;
+            pos = new Vector3(followTarget.x, pose.position.y, followTarget.z);
+        }
+        CreateAnchor(pos, plane);
+        followTarget = pos;
+        settled = false;
+    }
+
+    /// <summary>Projects a screen point onto the horizontal plane the model stands on (smooth, no raycast noise).</summary>
+    private bool ScreenToFloor(Vector2 screenPos, out Vector3 point)
+    {
+        point = default;
+        if (arCamera == null || modelRoot == null) return false;
+        Ray ray = arCamera.ScreenPointToRay(screenPos);
+        var floor = new Plane(Vector3.up, new Vector3(0f, modelRoot.position.y, 0f));
+        if (!floor.Raycast(ray, out float enter) || enter > 10f) return false;
+        point = ray.GetPoint(enter);
+        return true;
+    }
+
+    private void HandleTwoFingers()
+    {
+        Touch t0 = Input.GetTouch(0), t1 = Input.GetTouch(1);
+        if (IsOverUI(t0.fingerId) && IsOverUI(t1.fingerId)) return;
+
+        float dist = Vector2.Distance(t0.position, t1.position);
+        float angle = Mathf.Atan2(t1.position.y - t0.position.y, t1.position.x - t0.position.x) * Mathf.Rad2Deg;
+
+        if (t0.phase == TouchPhase.Began || t1.phase == TouchPhase.Began || lastPinchDistance <= 0f)
+        {
+            lastPinchDistance = dist;
+            lastTwistAngle = angle;
+            IsPinching = true;
+            return;
+        }
+
+        if (dist > 1f)
+            userScale = Mathf.Clamp(userScale * dist / lastPinchDistance, userScaleLimits.x, userScaleLimits.y);
+        userYaw -= Mathf.DeltaAngle(lastTwistAngle, angle) * rotationMultiplier;
+
+        lastPinchDistance = dist;
+        lastTwistAngle = angle;
+        IsPinching = true;
+        OnUserManipulated?.Invoke();
+    }
+
+    private bool TouchHitsModel(Vector2 screenPos)
+    {
+        if (model == null || arCamera == null) return false;
+        Bounds b = WorldBounds(model);
+        if (b.size == Vector3.zero) return false;
+
+        // Screen-space box of the model's bounds (+ generous margin for fingers)
+        Vector2 min = new Vector2(float.MaxValue, float.MaxValue), max = new Vector2(float.MinValue, float.MinValue);
+        Vector3 c = b.center, e = b.extents;
+        for (int i = 0; i < 8; i++)
+        {
+            Vector3 corner = c + Vector3.Scale(e, new Vector3((i & 1) == 0 ? -1 : 1, (i & 2) == 0 ? -1 : 1, (i & 4) == 0 ? -1 : 1));
+            Vector3 sp = arCamera.WorldToScreenPoint(corner);
+            if (sp.z <= 0f) continue;
+            min = Vector2.Min(min, sp);
+            max = Vector2.Max(max, sp);
+        }
+        if (min.x > max.x) return false;
+        float margin = Screen.dpi > 0 ? Screen.dpi * 0.15f : 40f;
+        return screenPos.x >= min.x - margin && screenPos.x <= max.x + margin &&
+               screenPos.y >= min.y - margin && screenPos.y <= max.y + margin;
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    /// <summary>
+    /// Detected surfaces glow (ARGlowPlane) while the user looks for a spot; they fade away once the
+    /// model is placed and come back on "re-place".
+    /// </summary>
+    private void UpdatePlaneVisibility(float dt)
+    {
+        if (planeManager == null) return;
+        ARGlowPlane.Visible = !IsPlaced;
+        planesVisible = ARGlowPlane.Visible;
+
+        planeVisibilityTimer -= dt;
+        if (planeVisibilityTimer > 0f) return;
+        planeVisibilityTimer = 0.25f; // pick up newly detected planes
+        foreach (var plane in planeManager.trackables)
+            if (plane.GetComponent<ARGlowPlane>() == null) plane.gameObject.AddComponent<ARGlowPlane>();
+    }
+
+    private GameObject GetModel()
+    {
+        if (model != null) return model;
+        if (sceneInitializer != null && !sceneInitializer.IsModelReady) return null;
+        if (modelLoader != null && modelLoader.LastLoadedModel != null) return modelLoader.LastLoadedModel;
+        var bridge = ARModelBridge.Instance;
+        if (bridge != null && bridge.LoadedGltf != null) return GameObject.Find("LoadedModel");
+        return null;
+    }
+
+    private void SetState(PlacementState s)
+    {
+        if (CurrentState == s) return;
+        CurrentState = s;
         if (sceneInitializer == null) return;
-
-        switch (CurrentState)
+        switch (s)
         {
-            case PlacementState.Scanning:
-                sceneInitializer.SetStatus("Scan floor/surface with camera or tap Spawn.");
-                break;
-            case PlacementState.SurfaceTargeted:
-                sceneInitializer.SetStatus("Surface targeted! Tap Spawn or screen to place.");
-                break;
-            case PlacementState.Placed:
-                sceneInitializer.SetStatus("Model placed! Drag to move, 2 fingers to scale/rotate.");
-                break;
+            case PlacementState.Initializing: sceneInitializer.SetStatus("Starting AR…"); break;
+            case PlacementState.Scanning: sceneInitializer.SetStatus("Move your phone slowly to find a floor or table."); break;
+            case PlacementState.Ready: sceneInitializer.SetStatus("Aim the glowing ring, then tap PLACE MODEL."); break;
+            case PlacementState.Placed: sceneInitializer.SetStatus("Drag to move · Pinch to resize · Twist to rotate."); break;
         }
     }
 
-    public void ResetPlacement()
+    private void CreateReticle()
     {
-        if (currentAnchor != null)
+        if (reticlePrefab != null)
         {
-            Destroy(currentAnchor);
-            currentAnchor = null;
+            reticle = Instantiate(reticlePrefab);
+            reticle.SetActive(false);
+            return;
         }
+        var shader = Resources.Load<Shader>("RealityDropUI/Turntable");
+        if (shader == null) return;
 
-        if (placedModel != null)
-        {
-            placedModel.SetActive(false);
-            placedModel = null;
-        }
-
-        SetState(PlacementState.Scanning);
+        reticle = new GameObject("AR_Placement_Reticle");
+        var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
+        Destroy(quad.GetComponent<Collider>());
+        quad.transform.SetParent(reticle.transform, false);
+        quad.transform.localPosition = new Vector3(0f, 0.003f, 0f);
+        quad.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+        reticleMaterial = new Material(shader);
+        reticleMaterial.SetFloat("_RingRadius", 0.8f);
+        reticleMaterial.SetFloat("_CoreWidth", 0.025f);
+        reticleMaterial.SetFloat("_GlowWidth", 0.09f);
+        reticleMaterial.SetFloat("_ShadowAlpha", 0f);
+        var r = quad.GetComponent<MeshRenderer>();
+        r.sharedMaterial = reticleMaterial;
+        r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        r.receiveShadows = false;
+        reticle.SetActive(false);
     }
 
-    #endregion
+    private static Bounds WorldBounds(GameObject go)
+    {
+        var renderers = go.GetComponentsInChildren<Renderer>(true);
+        bool any = false;
+        Bounds b = default;
+        foreach (var r in renderers)
+        {
+            if (r.gameObject.name == "ContactShadow") continue;
+            if (!any) { b = r.bounds; any = true; }
+            else b.Encapsulate(r.bounds);
+        }
+        return any ? b : new Bounds(go.transform.position, Vector3.zero);
+    }
+
+    private static bool IsOverUI(int pointerId)
+    {
+        var es = EventSystem.current;
+        if (es == null) return false;
+        return pointerId < 0 ? es.IsPointerOverGameObject() : es.IsPointerOverGameObject(pointerId);
+    }
+
+    private static float EaseOutCubic(float t) { t = 1f - t; return 1f - t * t * t; }
+
+    private static float EaseOutBack(float t)
+    {
+        const float c1 = 1.5f, c3 = c1 + 1f;
+        float x = t - 1f;
+        return 1f + c3 * x * x * x + c1 * x * x;
+    }
 }

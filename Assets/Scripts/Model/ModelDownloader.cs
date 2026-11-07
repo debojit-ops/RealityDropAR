@@ -1,4 +1,3 @@
-
 using System;
 using System.Collections;
 using System.IO;
@@ -9,9 +8,18 @@ using UnityEngine.Networking;
 public static class ModelDownloader
 {
     /// <summary>
-    /// Downloads a model (zip or glb), extracts if needed, and returns the .glb path.
+    /// Downloads a model (zip or glb), extracts if needed, and returns the .glb path (null on failure).
+    /// onProgress(progress 0..1 or -1 if size unknown, bytesDownloaded, totalBytes or 0) is called every frame.
+    /// onStage("downloading" / "unpacking") reports the current step.
+    /// If isCancelled() returns true the request is aborted and onComplete is NOT called.
     /// </summary>
-    public static IEnumerator DownloadAndExtractGLB(string downloadUrl, string saveFolder, Action<string> onComplete)
+    public static IEnumerator DownloadAndExtractGLB(
+        string downloadUrl,
+        string saveFolder,
+        Action<string> onComplete,
+        Action<float, ulong, ulong> onProgress = null,
+        Func<bool> isCancelled = null,
+        Action<string> onStage = null)
     {
         if (!Directory.Exists(saveFolder))
             Directory.CreateDirectory(saveFolder);
@@ -24,11 +32,33 @@ public static class ModelDownloader
 
         string localPath = Path.Combine(saveFolder, "downloadedFile" + extension);
 
-        // --- Step 2: Download file ---
+        // --- Step 2: Download file, reporting progress every frame ---
+        onStage?.Invoke("downloading");
         using (UnityWebRequest request = UnityWebRequest.Get(downloadUrl))
         {
             request.downloadHandler = new DownloadHandlerFile(localPath);
-            yield return request.SendWebRequest();
+            var operation = request.SendWebRequest();
+            ulong totalBytes = 0;
+
+            while (!operation.isDone)
+            {
+                if (isCancelled != null && isCancelled())
+                {
+                    request.Abort();
+                    Debug.Log("[ModelDownloader] Download cancelled by user.");
+                    yield break;
+                }
+
+                if (totalBytes == 0)
+                    ulong.TryParse(request.GetResponseHeader("Content-Length"), out totalBytes);
+
+                ulong downloaded = request.downloadedBytes;
+                float progress = totalBytes > 0 ? Mathf.Clamp01((float)((double)downloaded / totalBytes)) : -1f;
+                onProgress?.Invoke(progress, downloaded, totalBytes);
+                yield return null;
+            }
+
+            if (isCancelled != null && isCancelled()) yield break;
 
             if (request.result != UnityWebRequest.Result.Success)
             {
@@ -36,6 +66,8 @@ public static class ModelDownloader
                 onComplete?.Invoke(null);
                 yield break;
             }
+
+            onProgress?.Invoke(1f, request.downloadedBytes, totalBytes > 0 ? totalBytes : request.downloadedBytes);
         }
 
         // --- Step 3: Log debug info ---
@@ -45,6 +77,9 @@ public static class ModelDownloader
         // --- Step 4: Handle file type ---
         if (extension == ".zip")
         {
+            onStage?.Invoke("unpacking");
+            yield return null; // let the UI show the "unpacking" step before the blocking extract
+
             string extractPath = Path.Combine(saveFolder, "Extracted");
             if (Directory.Exists(extractPath))
                 Directory.Delete(extractPath, true);

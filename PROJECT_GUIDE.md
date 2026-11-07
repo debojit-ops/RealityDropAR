@@ -47,12 +47,14 @@ SampleScene (Search + results)  ──tap card──►  PreviewScene_new (3D pr
 
 | Scene | In build? | Purpose |
 |---|---|---|
-| `Assets/Scenes/SampleScene.unity` | ✅ index 0 | **Current** search screen (results use a 1-column VerticalLayoutGroup) |
-| `Assets/Scenes/UnderProgress.unity` | ❌ | **New UI in progress**: has the **2-column GridLayoutGroup** (cell 550x650) plus SearchUI/SketchfabAPIManager. Should replace SampleScene once finished. |
-| `Assets/Scenes/PreviewScene_new.unity` | ✅ | 3D preview (orbit/zoom/auto-rotate) |
+| `Assets/Scenes/SampleScene.unity` | ✅ index 0 | **Current** search screen (2-column grid via `ResultsGridLayout`) |
+| `Assets/Scenes/UnderProgress.unity` | ❌ | Older UI experiment |
+| `Assets/Scenes/PreviewScene_new.unity` | ✅ | 3D preview (design A Neon Showroom) |
 | `Assets/Scenes/ARScene.unity` | ✅ | AR placement + gestures |
 
-Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `PreviewScene_new`), `SceneSwitcher.cs` (→ `ARScene`), `ARUIManager.cs` (→ `PreviewScene_new`), `PreviewUIManager.cs`. **If you rename a scene, update all of them.**
+Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `PreviewScene_new`), `ARScreenUI.cs`/`ARUIManager.cs` (→ `PreviewScene_new`), `PreviewScreenUI.cs`/`PreviewUIManager.cs` (→ `SampleScene`, `ARScene`). **If you rename a scene, update all of them.**
+
+**Design concepts canvas** (home + preview concepts): https://claude.ai/artifact/JFGPS56K7DHe1zSUBQn3pr
 
 ---
 
@@ -121,6 +123,8 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 - [x] Rounded UI system: `UIRoundedCorners.cs` + `Assets/Resources/RealityDropUI/RoundedRect.shader` (anti-aliased SDF, per-corner radius, border, soft glow; one shared material). Kept in Resources so it ships in builds. Use it for any future rounded UI.
 - [x] iOS scrolling: hidden scrollbar (space given back to the grid), elastic bounce, momentum
 - [x] Toast restyled as a rounded glass pill
+- [x] **Premium search row** (`SearchBarStyler.cs`, applied from `SearchUI.Start`): glass pill field with cyan border, drawn magnifier icon, "Search 3D models" placeholder, cyan caret/selection, clear (×) button, cyan glow while typing; cyan gradient pill button (`UIGradient.cs`) with breathing halo + press spring (`UIPressRelay.cs`). Row is aligned to the card edges.
+- [x] Results area widened to fill the frame: `ResultsScrollView` width 1740 in SampleScene + UnderProgress
 - [x] Fixed: only 24 results ever loaded (auto-load/next-page was blocked by `isFetchingPage` still being true during parsing)
 - [x] Stale results from an older search are discarded (`searchId`)
 - [x] `SearchUI` finds the results ScrollRect automatically if its field is empty
@@ -128,11 +132,26 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 - [ ] Recycle cards (pooling) if we ever need more than ~240 results
 - [ ] Untick `loadInfiniteNoLimit` on `SketchfabAPIManager` in SampleScene + UnderProgress (currently ticked; the cap protects us but scroll-to-load is better)
 
+- [x] **Recommended for you slideshow** (`RecommendationsPanel.cs`, added by `SearchUI.Start`; shown while no results are visible): one big model card at a time (real thumbnail, caption pill, title, model · author, VIEW), swipe or auto-advance every 4.5 s, page dots; tap → download screen → preview (`SketchfabAPIManager.OpenModel`). Content: "Because you searched …" (most-liked free model for the last 2 searches, stored in PlayerPrefs `RecentSearches`) + "Anime pick" (Naruto, Gojo, Itachi always + 4 rotating from `AnimeCharacters`). Uses `sort_by=-likeCount`, falls back to default order.
+  - Tap a card → searches that name and shows **all** its models (e.g. every "gojo satoru" model) in the results grid; the **VIEW** button opens that exact model.
+  - ‹ › arrow buttons on the slideshow (wrap around). While search results are showing, a "‹ Recommended" pill sits above the grid (grid gets `ResultsGridLayout.ExtraTopPadding`); it — or the Android back button — clears the search (`SketchfabAPIManager.ResetSearch`) and brings the slideshow back.
+- [x] **Content safety** (`ContentFilter.cs`): every model shown (search results + slideshow) must pass — Sketchfab `isAgeRestricted` must be false and the name/tags must not contain adult/suggestive keywords (whole-word list in `ContentFilter.BlockedWords`). Slideshow no longer sorts by likes (that surfaced fan-service). Slide title = real model name; caption = reason (e.g. "ANIME PICK · NARUTO UZUMAKI").
+- [ ] Consider an extra safety layer before store release (e.g. only staff-picked models in recommendations, or a report button)
+
+### A2. Visual quality & typography
+- [x] Fonts: **Inter** (body: Regular/SemiBold/Bold) + **Rajdhani** (accents: button, %, badge) in `Assets/Resources/RealityDropUI/Fonts` (OFL licenses included). `UIFonts.cs` builds high-quality TMP assets at runtime (90pt sampling, 2048 atlas, SDFAA). Use `UIFonts.Apply(text, UIFonts.SemiBold)` for any new text.
+- [x] UI textures (`bg.png`, `Bg/Frame2.png`, `Bg/bg.jpg`): uncompressed, max 4096, no mipmaps
+- [x] URP `Mobile_RPAsset` Render Scale 0.8 → 1.0 (sharper camera feed / 3D models)
+- [x] Download screen uses ~1024px thumbnail; list keeps ~512px
+- [x] Safe area: `SafeAreaFitter.cs` scales the main screen into `Screen.safeArea` (Android "render outside safe area" is on). Applied from `SearchUI.Awake`. Preview/AR scenes don't have it yet.
+- [ ] **`bg.png` is only 853×1844** (contains the neon frames + logo) — needs a 1080×2340 (or 1440×3120) re-export, or frames redrawn in code + separate hi-res logo
+- [ ] Apply `UIFonts` + safe area to PreviewScene_new and ARScene UI
+
 ### B. Download & Load: ~75%
 - [x] Fetch GLB download link
 - [x] Download zip + extract `.glb` to `persistentDataPath/Models`
 - [x] glTFast loading + material sanitizing
-- [~] **Download progress UI**: a "Downloading model..." message shows now; still no percent/spinner or cancel
+- [x] **Download progress screen** (`DownloadOverlay.cs`): dimmed background, glass panel with neon border, model thumbnail/title/author, neon progress bar with glow, live %, "x MB of y MB", steps (Preparing → Downloading → Unpacking → Opening), Cancel button. `ModelDownloader` now reports progress/stage and supports cancel; preview scene loads async behind the overlay.
 - [x] Message on screen when a download fails (401/403/404, no GLB, network, unzip)
 - [x] Extra taps ignored while a download is running
 - [ ] Skip re-downloading if the model is already cached; clear out old models to free disk space
@@ -142,7 +161,12 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 - [x] Load, normalize and frame the model
 - [x] Orbit (drag), zoom (pinch/scroll), reset, auto-rotate
 - [x] "View in AR" hand-off through `ARModelBridge`
-- [ ] Back to search keeps the previous results (they currently reload from scratch)
+- [x] **New preview screen — design A "Neon Showroom"** (chosen from 3 concepts: https://claude.ai/artifact/JFGPS56K7DHe1zSUBQn3pr). `PreviewScreenUI.cs` builds it at runtime (added by `ModelPreviewManager.Awake`) and hides the old UI canvas: top bar (back · title/author · info card), FREE/Sketchfab/size badges, gesture hint, glass dock (Auto-spin · Reset · Scene · Light) + gradient VIEW IN AR, loading + failure states, safe area.
+- [x] Orbit camera (`PreviewControls.cs` rewritten): model stays upright; drag orbits with inertia, pinch/wheel zoom clamped to model size, double-tap reset, auto-spin turntable, ignores touches on UI
+- [x] `PreviewEnvironment.cs`: neon turntable + contact shadow (`Resources/RealityDropUI/Turntable.shader`), studio backdrop (`Backdrop.shader`), scenes Studio/Room/Outdoor (Resources `Skybox`, `Skybox 1`), light presets Soft/Bright/Dramatic
+- [x] `UIIcons.cs`: crisp code-drawn line icons (back, info, spin, reset, scene, light, AR cube, close)
+- [x] Model title/author/size passed from search via PlayerPrefs (`LastModelTitle`, `LastModelAuthor`, `LastModelSizeBytes`)
+- [x] Back to search returns to the same feed: `SearchSession.cs` (static, in-memory) keeps query, results, next page and scroll position; `SketchfabAPIManager.Start` rebuilds it. Only ~48 thumbnails around the scroll position stay in memory while a model is open; others re-download.
 - [ ] Remove the commented-out blocks from `PreviewUIManager.cs`
 
 ### D. AR Experience: ~70%
@@ -151,10 +175,15 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 - [x] ARAnchor attachment (anti-drift)
 - [x] Move (drag), scale (pinch), rotate (twist)
 - [x] Reset placement
-- [~] **Drift**: better but not solved (per commit history). Check anchor and tracking quality, and consider re-anchoring only when a drag ends instead of every frame.
-- [ ] Onboarding hint ("move your phone to scan the floor")
-- [ ] Shadow under the model for realism (optional)
-- [ ] Hide or fade the plane visuals after placement
+- [x] **Drift root causes fixed (2026-11-07)**: ARScene had (1) a second Camera + ARCameraManager + ARCameraBackground on "Camera Offset" (static camera, same depth → model appeared to slide; double camera cost) and (2) a duplicate ModelPlacement on "XR Origin" (double placement, two anchors fighting). Both removed from the scene; `ModelPlacement.Awake` also guards against them at runtime.
+- [x] **ModelPlacement rewritten** for stability: placement only after ~0.6 s of stable tracking, only on confirmed horizontal planes (PlaneWithinPolygon, HorizontalUp, ≥0.04 m²), never floating; ONE anchor (re-anchored only when a drag ends / tap-to-move; old anchor GameObject destroyed); model follows anchor through a 3 mm jitter dead-zone + smoothing; freezes while tracking is lost; drag projects onto the model's floor plane; tap elsewhere glides it; pinch (10%–1000%) + twist; model centered on its footprint; pop-in animation; contact shadow; smoothed neon reticle; plane visuals hidden after placement; AR session matches camera frame rate (60 fps restored when leaving)
+- [x] **AR HUD** (`ARScreenUI.cs`, via `UIKit.cs`/`UIPress.cs`): back · title · re-place, coaching pill (preparing → move phone → tap to place → gestures; tracking lost), PLACE HERE button, size % chip; old AR canvas + debug buttons hidden
+- [x] **AR placement flow (2026-11-07)**: 1) detected floors/tables glow as neon panels (`ARGlowPlane.cs` + `Resources/RealityDropUI/ARGlowPlane.shader`: constant-width neon edge, dot grid, scanning pulse; replaces the prefab's translucent visual; horizontal planes only) → 2) the preview-style glowing ring (Turntable shader) is the placement indicator, grey while settling, cyan when ready → 3) **PLACE MODEL** button places (taps no longer place) with a ring flare; panels fade out after placing and return on re-place.
+- [x] **Light estimation** (`ARLightEstimation.cs`): brightness, color, main light direction, ambient SH, smoothed
+- [ ] Optional: ARCore depth occlusion (model hidden behind real objects) on supported devices
+- [ ] Clean up: delete old AR canvas objects (Spawn/Back/debug buttons, HintText) and `ARUIManager` from ARScene once the new HUD is confirmed on device
+
+- [ ] **Before first device test**: lock orientation to Portrait (currently Auto Rotation); set a real package name (currently the template's `com.UnityTechnologies.com.unity.template.urpblank`); for iPhone: enable ARKit in XR Plug-in Management (iOS) + add a Camera Usage Description
 
 ### E. Snapshot: 0% ❗
 - [ ] Camera/shutter button in the AR UI
@@ -187,6 +216,19 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 ## 8. Change Log
 Add newest entries at the top: `YYYY-MM-DD — what changed — files`.
 
+- 2026-11-07 — AR: glowing plane panels, ring indicator, PLACE MODEL button + placement flare — `ARGlowPlane.cs`, `ARGlowPlane.shader` (new), `ModelPlacement.cs`, `ARScreenUI.cs`
+- 2026-11-07 — Fix: download screen thumbnail was cropped for a 100×100 placeholder rect on first show (looked stretched until the hi-res image arrived) — layout is now rebuilt before cropping and re-cropped on size change — `DownloadOverlay.cs`
+- 2026-11-07 — Slideshow arrows + "‹ Recommended" back-to-home from search results — `RecommendationsPanel.cs`, `ResultsGridLayout.cs`, `SketchfabAPIManager.cs` (ResetSearch), `UIIcons.cs` (Next)
+- 2026-11-07 — Slideshow: tapping a card shows all models for that name; VIEW opens the single model — `RecommendationsPanel.cs`
+- 2026-11-07 — Adult content filter for search + recommendations (`ContentFilter.cs`); slideshow relevance order, real model names
+- 2026-11-07 — Main screen recommendations reworked into a model slideshow (recent searches + anime picks); chips + `FlowLayoutGroup.cs` removed; `SketchfabAPIManager.OpenModel` + recent-search memory
+- 2026-11-07 — AR overhaul: removed duplicate camera + duplicate ModelPlacement from ARScene; `ModelPlacement.cs` rewritten (stable anchoring, gestures, shadow, reticle); new `ARScreenUI.cs`, `ARLightEstimation.cs`, `UIKit.cs`, `UIPress.cs`; `ARSceneInitializer.cs` (status/error props, adds HUD + light estimation)
+- 2026-11-07 — Back from preview restores the search feed (query, cards, scroll position) — `SearchSession.cs` (new), `SketchfabAPIManager.cs`
+- 2026-11-07 — Preview screen redesign (design A): `PreviewScreenUI.cs`, `PreviewEnvironment.cs`, `UIIcons.cs`, `Turntable.shader`, `Backdrop.shader` (new); `PreviewControls.cs` rewritten as orbit camera; `ModelPreviewManager.cs` (ready/failed events, orbit framing); `SafeAreaFitter.cs` (no-backdrop option); `SketchfabAPIManager.cs` (saves title/author/size)
+- 2026-11-07 — Sharpness + typography pass: Inter/Rajdhani fonts (`UIFonts.cs`), safe area (`SafeAreaFitter.cs`), uncompressed UI textures, render scale 1.0, hi-res download thumbnail, larger/higher-contrast text, full-width Cancel, stronger dim
+- 2026-11-07 — Download progress screen with live %, MB, steps and Cancel — `DownloadOverlay.cs` (new), `ModelDownloader.cs`, `SketchfabAPIManager.cs`, `ResultCardView.cs`
+- 2026-11-07 — Search row fitted inside the background neon frame (`fitToFrame`, frameSize 1690×185)
+- 2026-11-07 — Premium search field + button, results area widened (1740) with even edge padding — `SearchBarStyler.cs`, `UIGradient.cs`, `UIPressRelay.cs` (new), `SearchUI.cs`, `ResultsGridLayout.cs`, both scenes
 - 2026-11-07 — Premium iOS-style results: rounded glass cards, glow, skeletons, animations, author line, FREE badge, hidden scrollbar, pill toast — `ResultCardView.cs`, `UIRoundedCorners.cs` (new), `Resources/RealityDropUI/RoundedRect.shader` (new), `ResultsGridLayout.cs`, `SketchfabAPIManager.cs`
 - 2026-11-07 — Card layout: thumbnail fills top (cover-cropped via uvRect), title scales with card width, max 2 lines — `ResultCardView.cs` (new), `SketchfabAPIManager.cs`, `ResultsGridLayout.cs`
 - 2026-11-07 — Fixed overlapping result cards: responsive 2-column grid — `ResultsGridLayout.cs` (new), `SketchfabAPIManager.cs`

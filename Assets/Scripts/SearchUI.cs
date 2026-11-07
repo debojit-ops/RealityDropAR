@@ -15,6 +15,9 @@ public class SearchUI : MonoBehaviour
 
     void Awake()
     {
+        // Keep the whole screen clear of notches / punch-hole cameras (runs before the search row is styled)
+        if (searchBar != null) SafeAreaFitter.Apply(searchBar.GetComponentInParent<Canvas>());
+
         if (searchButton) searchButton.onClick.AddListener(OnSearchClicked);
         if (searchBar) searchBar.onSubmit.AddListener(OnSubmit);
 
@@ -30,6 +33,15 @@ public class SearchUI : MonoBehaviour
         {
             scrollRect.onValueChanged.AddListener(OnScrollValueChanged);
         }
+    }
+
+    void Start()
+    {
+        // Premium search row (glass field + gradient button), aligned with the results grid
+        SearchBarStyler.Apply(searchBar, searchButton, scrollRect != null ? (RectTransform)scrollRect.transform : null);
+
+        // "Recommended: popular anime characters" while the results area is empty
+        if (searchBar != null) RecommendationsPanel.Create(scrollRect, api, searchBar);
     }
 
     void OnDestroy()

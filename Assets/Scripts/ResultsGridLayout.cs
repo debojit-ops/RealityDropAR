@@ -13,11 +13,21 @@ public class ResultsGridLayout : MonoBehaviour
     [Tooltip("Number of columns.")]
     public int columns = 2;
     [Tooltip("Card height = card width * this (1.3 = square thumbnail + 2-line title + author line).")]
-    public float heightToWidthRatio = 1.3f;
+    public float heightToWidthRatio = 1.42f;
     [Tooltip("Gap between cards and around the edges, as a fraction of the list width.")]
     public float spacingToWidth = 0.045f;
+    [Tooltip("Left/right/top padding as a multiple of the gap between cards (1 = same as the gap).")]
+    public float edgePaddingToSpacing = 1f;
     [Tooltip("Hide the scrollbar (iOS style) and let the cards use its space.")]
     public bool hideScrollbar = true;
+
+    /// <summary>Extra space above the first row (e.g. for the "back to recommendations" button).</summary>
+    public float ExtraTopPadding
+    {
+        get => extraTopPadding;
+        set { if (Mathf.Approximately(value, extraTopPadding)) return; extraTopPadding = value; lastWidth = -1f; }
+    }
+    private float extraTopPadding;
 
     private GridLayoutGroup grid;
     private RectTransform rect;
@@ -131,6 +141,13 @@ public class ResultsGridLayout : MonoBehaviour
         return rect != null ? rect.rect.width : 0f;
     }
 
+    /// <summary>Left/right padding the grid uses for a list of the given width (used to align other UI with the cards).</summary>
+    public float GetEdgePadding(float listWidth)
+    {
+        float spacing = Mathf.Round(listWidth * spacingToWidth);
+        return Mathf.RoundToInt(spacing * edgePaddingToSpacing);
+    }
+
     private void UpdateCellSize()
     {
         float width = GetAvailableWidth();
@@ -139,12 +156,12 @@ public class ResultsGridLayout : MonoBehaviour
 
         int cols = Mathf.Max(1, columns);
         float spacing = Mathf.Round(width * spacingToWidth);
-        int pad = Mathf.RoundToInt(spacing);
+        int pad = Mathf.RoundToInt(GetEdgePadding(width)); // breathing room between cards and the frame
         // Extra bottom padding so the last row can scroll clear of the bottom edge / toast
-        grid.padding = new RectOffset(pad, pad, pad, pad * 3);
+        grid.padding = new RectOffset(pad, pad, pad + Mathf.RoundToInt(extraTopPadding), pad * 3);
         grid.spacing = new Vector2(spacing, spacing * 1.15f);
 
-        float cellWidth = (width - spacing * 2f - spacing * (cols - 1)) / cols;
+        float cellWidth = (width - pad * 2f - spacing * (cols - 1)) / cols;
         cellWidth = Mathf.Max(10f, Mathf.Floor(cellWidth));
         grid.cellSize = new Vector2(cellWidth, Mathf.Floor(cellWidth * heightToWidthRatio));
 

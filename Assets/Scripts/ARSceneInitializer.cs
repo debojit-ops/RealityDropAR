@@ -125,9 +125,21 @@ public class ARSceneInitializer : MonoBehaviour
         Debug.Log("[ARSceneInitializer] Model ready for AR placement.");
     }
 
+    public string LastStatus { get; private set; }
+    public bool HasError { get; private set; }
+
     public void SetStatus(string msg)
     {
+        LastStatus = msg;
+        if (!string.IsNullOrEmpty(msg) && msg.StartsWith("Error")) HasError = true;
         if (statusText != null)
             statusText.text = msg;
+    }
+
+    void Awake()
+    {
+        // New AR screen (coaching, PLACE button, gestures HUD) + real-world light matching
+        ARScreenUI.Ensure();
+        ARLightEstimation.Ensure();
     }
 }

@@ -34,6 +34,12 @@ public class ModelPreviewManager : MonoBehaviour
     public GltfImport LoadedGltf => loadedGltf;
     public string LoadedPath => loadedPath;
 
+    private void Awake()
+    {
+        // New showroom UI (design A): turntable, scenes, dock, VIEW IN AR
+        PreviewScreenUI.Ensure();
+    }
+
     private async void Start()
     {
         if (!previewCamera) previewCamera = Camera.main;
@@ -54,13 +60,33 @@ public class ModelPreviewManager : MonoBehaviour
         else
         {
             Debug.LogError("[ModelPreviewManager] File not found at path: " + path);
+            Fail();
         }
     }
 
+    /// <summary>Raised when the model is loaded and framed (bounds are relative to modelParent).</summary>
+    public event System.Action<Bounds> OnModelReady;
+    /// <summary>Raised when the model can't be loaded.</summary>
+    public event System.Action OnModelFailed;
+    public bool IsReady { get; private set; }
+    public bool HasFailed { get; private set; }
+    public Bounds ModelBounds { get; private set; }
+
+    private PreviewControls orbit;
+    private PreviewControls Orbit => orbit != null ? orbit : (orbit = FindFirstObjectByType<PreviewControls>());
+
     private void Update()
     {
-        if (autoRotate && modelParent != null)
+        // With the orbit camera, "auto rotate" is a camera turntable spin (PreviewControls);
+        // the model itself stays upright on its turntable.
+        if (autoRotate && modelParent != null && Orbit == null)
             modelParent.Rotate(Vector3.up, autoRotateSpeed * Time.deltaTime, Space.World);
+    }
+
+    private void Fail()
+    {
+        HasFailed = true;
+        OnModelFailed?.Invoke();
     }
 
     public async Task LoadModel(string filePath)
@@ -69,6 +95,7 @@ public class ModelPreviewManager : MonoBehaviour
         if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
         {
             Debug.LogError("[ModelPreviewManager] Invalid or missing path: " + filePath);
+            Fail();
             return;
         }
 
@@ -81,6 +108,7 @@ public class ModelPreviewManager : MonoBehaviour
         if (!success)
         {
             Debug.LogError("[ModelPreviewManager] glTFast failed to load: " + filePath);
+            Fail();
             return;
         }
 
@@ -93,6 +121,7 @@ public class ModelPreviewManager : MonoBehaviour
         if (!success)
         {
             Debug.LogError("[ModelPreviewManager] glTFast failed to instantiate scene.");
+            Fail();
             Destroy(loadedModel);
             loadedModel = null;
             return;
@@ -140,6 +169,8 @@ public class ModelPreviewManager : MonoBehaviour
         if (preBounds.size == Vector3.zero)
         {
             Debug.LogWarning("[ModelPreviewManager] No renderer bounds found.");
+            IsReady = true; // don't leave the screen stuck on "Loading"
+            OnModelReady?.Invoke(new Bounds(Vector3.up * 0.5f, Vector3.one));
             return;
         }
 
@@ -157,8 +188,16 @@ public class ModelPreviewManager : MonoBehaviour
         loadedModel.transform.localPosition += new Vector3(0f, -scaledBounds.min.y, 0f);
 
         scaledBounds = CalculateBoundsRelativeTo(loadedModel.transform, modelParent);
+        ModelBounds = scaledBounds;
 
-        if (previewCamera != null)
+        if (Orbit != null)
+        {
+            // Orbit camera frames the model itself (upright model, camera circles around it)
+            modelParent.localRotation = Quaternion.identity;
+            Orbit.SetAutoSpin(autoRotate);
+            Orbit.FrameModel(scaledBounds);
+        }
+        else if (previewCamera != null)
         {
             float distance = Mathf.Max(minCameraDistance, scaledBounds.extents.magnitude * cameraDistanceMultiplier);
             Vector3 dir = (previewCamera.transform.position - modelParent.position).normalized;
@@ -171,6 +210,9 @@ public class ModelPreviewManager : MonoBehaviour
             initialCameraPosition = previewCamera.transform.position;
             initialCameraRotation = previewCamera.transform.rotation;
         }
+
+        IsReady = true;
+        OnModelReady?.Invoke(scaledBounds);
     }
 
     private Bounds CalculateBoundsRelativeTo(Transform root, Transform relativeTo)
@@ -210,11 +252,17 @@ public class ModelPreviewManager : MonoBehaviour
             SetLayerRecursively(t.gameObject, layer);
     }
 
-    public void SetAutoRotate(bool on) => autoRotate = on;
+    public void SetAutoRotate(bool on)
+    {
+        autoRotate = on;
+        if (Orbit != null) Orbit.SetAutoSpin(on);
+    }
+
     public bool GetAutoRotate() => autoRotate;
 
     public void ResetView()
     {
+        if (Orbit != null) { Orbit.ResetView(); return; }
         if (!previewCamera || modelParent == null) return;
         previewCamera.transform.position = new Vector3(0f, 0.9f, -2.7f);
         previewCamera.transform.rotation = Quaternion.Euler(11.5f, 0f, 0f);

@@ -40,13 +40,45 @@ public class UIRoundedCorners : BaseMeshEffect
         }
     }
 
+    [Tooltip("Use borderColor instead of the shared material's border color (e.g. a bright neon outline).")]
+    public bool overrideBorderColor = false;
+    public Color borderColor = new Color(0.30f, 0.85f, 1f, 1f);
+
+    private static readonly System.Collections.Generic.Dictionary<Color32, Material> borderMaterials =
+        new System.Collections.Generic.Dictionary<Color32, Material>();
+
     protected override void OnEnable()
     {
         base.OnEnable();
-        var mat = SharedMaterial;
-        if (mat != null && graphic != null && graphic.material != mat)
-            graphic.material = mat;
+        ApplyMaterial();
         EnableCanvasChannels(graphic != null ? graphic.canvas : null);
+    }
+
+    /// <summary>Gives this element its own border color (materials are cached per color, so batching is kept).</summary>
+    public void SetBorderColor(Color color)
+    {
+        overrideBorderColor = true;
+        borderColor = color;
+        ApplyMaterial();
+    }
+
+    private void ApplyMaterial()
+    {
+        if (graphic == null) return;
+        Material mat = SharedMaterial;
+        if (mat != null && overrideBorderColor)
+        {
+            Color32 key = borderColor;
+            if (!borderMaterials.TryGetValue(key, out var colored) || colored == null)
+            {
+                colored = new Material(mat) { name = "RoundedUI (border " + ColorUtility.ToHtmlStringRGBA(borderColor) + ")" };
+                colored.SetColor("_BorderColor", borderColor);
+                borderMaterials[key] = colored;
+            }
+            mat = colored;
+        }
+        if (mat != null && graphic.material != mat)
+            graphic.material = mat;
     }
 
     /// <summary>The shader reads TEXCOORD1-3; canvases strip them unless enabled.</summary>

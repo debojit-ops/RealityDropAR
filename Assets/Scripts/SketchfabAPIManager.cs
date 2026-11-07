@@ -49,6 +49,9 @@ public class SketchfabAPIManager : MonoBehaviour
     private TextMeshProUGUI toastText;
     private Coroutine hideMessageRoutine;
     private ResultCardView busyCard;
+    private DownloadOverlay downloadOverlay;
+    private int downloadToken = 0;
+    private ulong lastDownloadBytes;
 
     void Awake()
     {
@@ -56,6 +59,70 @@ public class SketchfabAPIManager : MonoBehaviour
 
         // Results are always shown as a responsive 2-column grid
         ResultsGridLayout.Ensure(resultsParent);
+    }
+
+    void Start()
+    {
+        // Coming back from the preview screen: rebuild the same feed, query and scroll position
+        if (SearchSession.PendingRestore && SearchSession.HasResults)
+            StartCoroutine(RestoreSession());
+    }
+
+    private IEnumerator RestoreSession()
+    {
+        SearchSession.MarkRestored();
+        currentQuery = SearchSession.Query;
+        nextPageUrl = SearchSession.NextPageUrl;
+        pagesLeftToAutoLoad = 0; // more pages load as the user scrolls
+        shownThisSearch = 0;
+        searchId++;
+
+        var searchUI = FindFirstObjectByType<SearchUI>();
+        if (searchUI != null && searchUI.searchBar != null)
+            searchUI.searchBar.text = currentQuery; // also shows the clear (×) button
+
+        ClearResults();
+        int index = 0;
+        foreach (var entry in SearchSession.Results)
+        {
+            SpawnResultCard(entry, Mathf.Min(index, 12)); // only the first rows animate in
+            index++;
+        }
+
+        // Wait for the grid to size the cards, then jump back to where the user was
+        yield return null;
+        yield return null;
+        Canvas.ForceUpdateCanvases();
+        var scroll = resultsParent != null ? resultsParent.GetComponentInParent<ScrollRect>() : null;
+        if (scroll != null)
+        {
+            scroll.StopMovement();
+            scroll.verticalNormalizedPosition = SearchSession.ScrollPosition;
+        }
+    }
+
+    /// <summary>Creates one result card for a remembered/loaded result.</summary>
+    private void SpawnResultCard(SearchSession.Entry entry, int appearIndex)
+    {
+        ResultCardView card = CreateCard();
+        card.SetInfo(entry.Name, entry.Author);
+        card.HiResThumbnailUrl = entry.HiResThumbnailUrl;
+        card.SetAppearDelay(appearIndex * 0.035f); // staggered pop-in
+
+        var img = card.Thumbnail;
+        if (img != null)
+        {
+            if (entry.Thumbnail != null) img.texture = entry.Thumbnail;
+            else if (!string.IsNullOrEmpty(entry.ThumbnailUrl)) StartCoroutine(LoadThumbnail(entry.ThumbnailUrl, img, entry));
+        }
+
+        var btn = card.GetComponent<Button>();
+        if (btn != null)
+        {
+            string capturedUid = entry.Uid;
+            btn.onClick.AddListener(() => OnModelSelected(capturedUid, card));
+        }
+        shownThisSearch++;
     }
 
     /// <summary>Call from a settings UI input field to store the token once.</summary>
@@ -89,6 +156,8 @@ public class SketchfabAPIManager : MonoBehaviour
         pagesLeftToAutoLoad = loadInfiniteNoLimit ? 9999 : autoLoadPages;
         shownThisSearch = 0;
         searchId++; // responses from older searches are ignored
+        SearchSession.Begin(currentQuery);
+        RecommendationsPanel.RememberSearch(currentQuery); // personalizes the recommendations slideshow
         ClearResults();
         SpawnSkeletons(); // shimmering placeholder cards until the first page arrives
 
@@ -209,50 +278,16 @@ public class SketchfabAPIManager : MonoBehaviour
             string authorName = model["user"]?.Value<string>("displayName");
             if (string.IsNullOrWhiteSpace(authorName)) authorName = model["user"]?.Value<string>("username");
 
-            string thumbnailUrl = null;
             var images = (JArray)model["thumbnails"]?["images"];
-            if (images != null && images.Count > 0)
-            {
-                int bestIndex = 0;
-                int minDiff = int.MaxValue;
-                // Target ~512px width for a good balance of quality and RAM
-                // (Using the maximum size will crash the app when loading "no limit" cards)
-                for (int i = 0; i < images.Count; i++)
-                {
-                    int w = images[i].Value<int?>("width") ?? -1;
-                    if (w > 0)
-                    {
-                        int diff = Mathf.Abs(w - 512);
-                        if (diff < minDiff)
-                        {
-                            minDiff = diff;
-                            bestIndex = i;
-                        }
-                    }
-                }
-                thumbnailUrl = images[bestIndex].Value<string>("url");
-                if (string.IsNullOrEmpty(thumbnailUrl))
-                    thumbnailUrl = images.Last.Value<string>("url");
-            }
+            // ~512px for the list (quality vs RAM: full size crashes phones with many cards),
+            // ~1024px only for the big image on the download screen
+            string thumbnailUrl = PickThumbnail(images, 512);
+            string hiResThumbnailUrl = PickThumbnail(images, 1024);
 
-            // Premium card (rounded glass, glow, badge, title + author); see ResultCardView
-            ResultCardView card = CreateCard();
-            card.SetInfo(name, authorName);
-            card.SetAppearDelay(indexInPage * 0.035f); // staggered pop-in
+            // Remember it (for Back from preview) and show a premium card; see ResultCardView
+            var entry = SearchSession.Add(uid, name, authorName, thumbnailUrl, hiResThumbnailUrl);
+            SpawnResultCard(entry, indexInPage);
             indexInPage++;
-
-            var img = card.Thumbnail;
-            if (!string.IsNullOrEmpty(thumbnailUrl) && img)
-                StartCoroutine(LoadThumbnail(thumbnailUrl, img));
-
-            var btn = card.GetComponent<Button>();
-            if (btn != null)
-            {
-                string capturedUid = uid;
-                ResultCardView capturedCard = card;
-                btn.onClick.AddListener(() => OnModelSelected(capturedUid, capturedCard));
-            }
-            shownThisSearch++;
         }
 
         Debug.Log($"[SketchfabAPIManager] Loaded {results.Count - skipped} models ({skipped} skipped as not downloadable). Next page available: {!string.IsNullOrEmpty(nextPageUrl)}");
@@ -268,6 +303,42 @@ public class SketchfabAPIManager : MonoBehaviour
         else if (shownThisSearch == 0 && !hasNextPage)
         {
             ShowMessage($"No free downloadable models found for \"{currentQuery}\".");
+        }
+    }
+
+    /// <summary>URL of the thumbnail whose width is closest to targetWidth (null if none).</summary>
+    private static string PickThumbnail(JArray images, int targetWidth)
+    {
+        if (images == null || images.Count == 0) return null;
+        int bestIndex = 0;
+        int minDiff = int.MaxValue;
+        for (int i = 0; i < images.Count; i++)
+        {
+            int w = images[i].Value<int?>("width") ?? -1;
+            if (w <= 0) continue;
+            int diff = Mathf.Abs(w - targetWidth);
+            if (diff < minDiff)
+            {
+                minDiff = diff;
+                bestIndex = i;
+            }
+        }
+        string url = images[bestIndex].Value<string>("url");
+        return string.IsNullOrEmpty(url) ? images.Last.Value<string>("url") : url;
+    }
+
+    /// <summary>Loads the sharper thumbnail for the download screen and hands it over (overlay owns it).</summary>
+    private IEnumerator LoadOverlayThumbnail(string url, int token)
+    {
+        using (UnityWebRequest request = UnityWebRequestTexture.GetTexture(url))
+        {
+            yield return request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success) yield break;
+            Texture2D texture = DownloadHandlerTexture.GetContent(request);
+            if (token == downloadToken && downloadOverlay != null)
+                downloadOverlay.SetHiResThumbnail(texture);
+            else
+                Destroy(texture);
         }
     }
 
@@ -296,10 +367,11 @@ public class SketchfabAPIManager : MonoBehaviour
     private static bool IsFreeDownloadable(JToken model)
     {
         bool? downloadable = model.Value<bool?>("isDownloadable");
-        return downloadable != false;
+        // Also never show adult / age-restricted models (see ContentFilter)
+        return downloadable != false && ContentFilter.IsSafe(model);
     }
 
-    private IEnumerator LoadThumbnail(string url, RawImage image)
+    private IEnumerator LoadThumbnail(string url, RawImage image, SearchSession.Entry entry = null)
     {
         using (UnityWebRequest request = UnityWebRequestTexture.GetTexture(url))
         {
@@ -309,7 +381,10 @@ public class SketchfabAPIManager : MonoBehaviour
             {
                 Texture2D texture = DownloadHandlerTexture.GetContent(request);
                 if (image != null)
+                {
                     image.texture = texture;
+                    if (entry != null) entry.Thumbnail = texture; // reused when coming back from preview
+                }
                 else
                     Destroy(texture); // card was removed (new search) while loading: don't leak GPU memory
             }
@@ -337,19 +412,71 @@ public class SketchfabAPIManager : MonoBehaviour
         }
     }
 
-    private void OnModelSelected(string uid, ResultCardView card)
+    /// <summary>Clears the current search and its remembered feed (used by "back to recommendations").</summary>
+    public void ResetSearch()
     {
-        // Ignore extra taps while a model is already downloading
-        if (isDownloading) return;
-        busyCard = card;
-        if (busyCard != null) busyCard.SetBusy(true); // card glows while its model downloads
-        StartCoroutine(FetchDownloadLink(uid));
+        searchId++;             // ignore any page still loading
+        currentQuery = null;
+        nextPageUrl = null;
+        shownThisSearch = 0;
+        SearchSession.Begin(null);
+        ClearResults();
     }
 
-    private IEnumerator FetchDownloadLink(string uid)
+    private void OnModelSelected(string uid, ResultCardView card)
+    {
+        if (isDownloading) return; // ignore extra taps while a model is downloading
+        busyCard = card;
+        OpenModel(uid,
+                  card != null ? card.TitleText : null,
+                  card != null ? card.AuthorName : null,
+                  card != null && card.Thumbnail != null ? card.Thumbnail.texture : null,
+                  card != null ? card.HiResThumbnailUrl : null);
+    }
+
+    /// <summary>
+    /// Downloads and opens a model (download screen → preview). Used by result cards and by the
+    /// recommendations slideshow. Ignored while another model is downloading.
+    /// </summary>
+    public void OpenModel(string uid, string title, string author, Texture thumbnail, string hiResThumbnailUrl)
+    {
+        if (isDownloading || string.IsNullOrEmpty(uid)) return;
+        if (busyCard != null) busyCard.SetBusy(true); // card glows while its model downloads
+
+        // Full-screen progress screen with the model's thumbnail, name and a live percentage
+        var overlay = GetOrCreateOverlay();
+        if (overlay != null) overlay.Show(title, author, thumbnail, CancelDownload);
+
+        downloadToken++;
+        StartCoroutine(FetchDownloadLink(uid, downloadToken, title, author));
+        if (!string.IsNullOrEmpty(hiResThumbnailUrl))
+            StartCoroutine(LoadOverlayThumbnail(hiResThumbnailUrl, downloadToken));
+    }
+
+    /// <summary>Called by the overlay's Cancel button: aborts the download and returns to the list.</summary>
+    private void CancelDownload()
+    {
+        downloadToken++; // makes the running download see itself as cancelled
+        isDownloading = false;
+        if (busyCard != null) busyCard.SetBusy(false);
+        busyCard = null;
+        if (downloadOverlay != null) downloadOverlay.Hide();
+    }
+
+    private DownloadOverlay GetOrCreateOverlay()
+    {
+        if (downloadOverlay != null) return downloadOverlay;
+        Canvas canvas = resultsParent != null ? resultsParent.GetComponentInParent<Canvas>() : null;
+        if (canvas == null) canvas = FindFirstObjectByType<Canvas>();
+        if (canvas == null) return null;
+        downloadOverlay = DownloadOverlay.Create(canvas.rootCanvas);
+        return downloadOverlay;
+    }
+
+    private IEnumerator FetchDownloadLink(string uid, int token, string modelTitle = null, string modelAuthor = null)
     {
         isDownloading = true;
-        ShowMessage("Downloading model...", autoHide: false);
+        bool Cancelled() => token != downloadToken;
 
         string url = $"https://api.sketchfab.com/v3/models/{uid}/download";
         string glbUrl = null;
@@ -359,6 +486,7 @@ public class SketchfabAPIManager : MonoBehaviour
             request.SetRequestHeader("Authorization", "Token " + apiToken);
 
             yield return request.SendWebRequest();
+            if (Cancelled()) yield break;
 
             if (request.result != UnityWebRequest.Result.Success)
             {
@@ -388,21 +516,51 @@ public class SketchfabAPIManager : MonoBehaviour
         }
 
         string saveFolder = Path.Combine(Application.persistentDataPath, "Models");
-        yield return ModelDownloader.DownloadAndExtractGLB(glbUrl, saveFolder, (glbPath) =>
-        {
-            if (string.IsNullOrEmpty(glbPath))
-            {
-                FailDownload("Download failed. Please try again or pick another model.");
-                return;
-            }
+        string resultPath = null;
+        bool finished = false;
 
-            // New model selected — clear the cached instance so AR re-loads fresh
-            ModelLoader.ClearCache();
-            PlayerPrefs.SetString("LastModelPath", glbPath);
-            PlayerPrefs.Save();
-            isDownloading = false;
-            UnityEngine.SceneManagement.SceneManager.LoadScene("PreviewScene_new");
-        });
+        yield return ModelDownloader.DownloadAndExtractGLB(glbUrl, saveFolder,
+            onComplete: glbPath => { resultPath = glbPath; finished = true; },
+            onProgress: (progress, downloaded, total) =>
+            {
+                lastDownloadBytes = total > 0 ? total : downloaded;
+                if (downloadOverlay != null) downloadOverlay.SetProgress(progress, downloaded, total);
+            },
+            isCancelled: Cancelled,
+            onStage: stage =>
+            {
+                if (downloadOverlay == null) return;
+                downloadOverlay.SetStage(stage == "unpacking" ? "Unpacking model…" : "Downloading…");
+            });
+
+        if (Cancelled() || !finished) yield break;
+
+        if (string.IsNullOrEmpty(resultPath))
+        {
+            FailDownload("Download failed. Please try again or pick another model.");
+            yield break;
+        }
+
+        // New model selected — clear the cached instance so AR re-loads fresh
+        ModelLoader.ClearCache();
+        PlayerPrefs.SetString("LastModelPath", resultPath);
+        // Shown on the preview screen (title, author credit, size)
+        PlayerPrefs.SetString("LastModelTitle", string.IsNullOrEmpty(modelTitle) ? "3D model" : modelTitle);
+        PlayerPrefs.SetString("LastModelAuthor", modelAuthor ?? string.Empty);
+        PlayerPrefs.SetString("LastModelSizeBytes", lastDownloadBytes.ToString());
+        PlayerPrefs.Save();
+
+        if (downloadOverlay != null) downloadOverlay.SetOpening();
+        yield return new WaitForSecondsRealtime(0.35f); // let the bar visibly reach 100%
+
+        // Remember the feed so Back from the preview returns to the same results and scroll position
+        var scroll = resultsParent != null ? resultsParent.GetComponentInParent<ScrollRect>() : null;
+        SearchSession.SaveForReturn(nextPageUrl, scroll != null ? scroll.verticalNormalizedPosition : 1f);
+
+        // Async load keeps the progress screen animating while the preview scene loads
+        var load = UnityEngine.SceneManagement.SceneManager.LoadSceneAsync("PreviewScene_new");
+        isDownloading = false;
+        yield return load;
     }
 
     private void FailDownload(string userMessage)
@@ -410,6 +568,7 @@ public class SketchfabAPIManager : MonoBehaviour
         isDownloading = false;
         if (busyCard != null) busyCard.SetBusy(false);
         busyCard = null;
+        if (downloadOverlay != null) downloadOverlay.Hide();
         ShowMessage(userMessage);
     }
 
@@ -483,7 +642,7 @@ public class SketchfabAPIManager : MonoBehaviour
         toastText.enableAutoSizing = true;
         toastText.fontSizeMin = 18f;
         toastText.fontSizeMax = 38f;
-        toastText.fontStyle = FontStyles.Bold;
+        UIFonts.Apply(toastText, UIFonts.SemiBold);
         toastText.color = new Color(0.90f, 0.96f, 1f, 1f);
         toastText.raycastTarget = false;
 
