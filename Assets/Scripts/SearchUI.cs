@@ -20,6 +20,11 @@ public class SearchUI : MonoBehaviour
 
         if (api == null) api = FindFirstObjectByType<SketchfabAPIManager>();
         if (scrollRect == null) scrollRect = GetComponentInChildren<ScrollRect>();
+        // Fallback: the ScrollRect that holds the results grid (the field is unassigned in the scenes)
+        if (scrollRect == null && api != null && api.resultsParent != null)
+            scrollRect = api.resultsParent.GetComponentInParent<ScrollRect>();
+        if (scrollRect == null)
+            Debug.LogWarning("[SearchUI] No ScrollRect found — endless scrolling is disabled. Assign 'Scroll Rect' in the Inspector.");
 
         if (scrollRect != null)
         {

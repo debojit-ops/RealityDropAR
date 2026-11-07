@@ -112,12 +112,21 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 - [x] Thumbnail cards with title + ~512px image
 - [x] Pagination / endless scroll + auto-load of extra pages
 - [x] Texture cleanup on new search (fixes out-of-memory crashes)
-- [~] **2-column (2x2) grid**: built in `UnderProgress.unity`, **not live yet** (live `SampleScene` is still 1-column)
+- [x] **2-column (2x2) grid**: `ResultsGridLayout.cs`, added automatically to `resultsParent` by `SketchfabAPIManager.Awake`. It replaces the old VerticalLayoutGroup (negative spacing, fixed 4504 height, 3.86 scale caused overlapping cards) and sizes cells from the viewport width. The card prefab's root AspectRatioFitter is disabled at spawn.
 - [ ] Move the finished `UnderProgress` UI into the build as the main scene (or port its grid into SampleScene)
 - [x] Only free, downloadable models shown (`downloadable=true` query + per-result `isDownloadable` check in `IsFreeDownloadable`)
 - [x] "No results" / network-error messages on screen (`ShowMessage`: uses `statusText` if assigned, else an auto-created toast)
-- [ ] Loading spinner while searching
-- [ ] Cap the total number of cards, or recycle them, so long scrolling doesn't use too much memory
+- [x] Loading placeholders while searching (6 pulsing skeleton cards, `skeletonCount`)
+- [x] **Premium iOS-style cards** (`ResultCardView.cs`): dark glass, rounded corners + thin cyan border, soft shadow that becomes a cyan glow on press/download, inset rounded thumbnail (cover-cropped, fades in), "FREE" pill, bold title + grey "by author", staggered pop-in, press spring. Everything scales with card width.
+- [x] Rounded UI system: `UIRoundedCorners.cs` + `Assets/Resources/RealityDropUI/RoundedRect.shader` (anti-aliased SDF, per-corner radius, border, soft glow; one shared material). Kept in Resources so it ships in builds. Use it for any future rounded UI.
+- [x] iOS scrolling: hidden scrollbar (space given back to the grid), elastic bounce, momentum
+- [x] Toast restyled as a rounded glass pill
+- [x] Fixed: only 24 results ever loaded (auto-load/next-page was blocked by `isFetchingPage` still being true during parsing)
+- [x] Stale results from an older search are discarded (`searchId`)
+- [x] `SearchUI` finds the results ScrollRect automatically if its field is empty
+- [x] Hard cap on cards per search: `maxTotalResults` (default 240)
+- [ ] Recycle cards (pooling) if we ever need more than ~240 results
+- [ ] Untick `loadInfiniteNoLimit` on `SketchfabAPIManager` in SampleScene + UnderProgress (currently ticked; the cap protects us but scroll-to-load is better)
 
 ### B. Download & Load: ~75%
 - [x] Fetch GLB download link
@@ -178,5 +187,9 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 ## 8. Change Log
 Add newest entries at the top: `YYYY-MM-DD — what changed — files`.
 
+- 2026-11-07 — Premium iOS-style results: rounded glass cards, glow, skeletons, animations, author line, FREE badge, hidden scrollbar, pill toast — `ResultCardView.cs`, `UIRoundedCorners.cs` (new), `Resources/RealityDropUI/RoundedRect.shader` (new), `ResultsGridLayout.cs`, `SketchfabAPIManager.cs`
+- 2026-11-07 — Card layout: thumbnail fills top (cover-cropped via uvRect), title scales with card width, max 2 lines — `ResultCardView.cs` (new), `SketchfabAPIManager.cs`, `ResultsGridLayout.cs`
+- 2026-11-07 — Fixed overlapping result cards: responsive 2-column grid — `ResultsGridLayout.cs` (new), `SketchfabAPIManager.cs`
+- 2026-11-07 — Fixed search returning only 24 results; stale-search guard; result cap; ScrollRect fallback — `SketchfabAPIManager.cs`, `SearchUI.cs`
 - 2026-11-07 — Free-downloadable-only safety filter, on-screen search/download error messages, double-tap guard — `SketchfabAPIManager.cs`
 - 2026-11-07 — Created this guide after a full project review — `PROJECT_GUIDE.md`, `CLAUDE.md`

@@ -22,6 +22,13 @@ public class SketchfabAPIManager : MonoBehaviour
     public int autoLoadPages = 4;
     [Tooltip("If true, it will attempt to load EVERY result Sketchfab has. WARNING: High risk of crashing mobile devices out of memory!")]
     public bool loadInfiniteNoLimit = false;
+    [Tooltip("Hard cap on cards per search to protect mobile memory (each card holds a ~512px thumbnail). Applies even with loadInfiniteNoLimit.")]
+    public int maxTotalResults = 240;
+    [Tooltip("Placeholder cards shown while a search is loading.")]
+    public int skeletonCount = 6;
+
+    // Sketchfab's maximum page size for /v3/search
+    private const int PageSize = 24;
 
     [Header("User Messages")]
     [Tooltip("Optional text for status/error messages. If empty, a temporary toast is created on the results' canvas.")]
@@ -36,14 +43,19 @@ public class SketchfabAPIManager : MonoBehaviour
     private bool isDownloading = false;
     private int pagesLeftToAutoLoad = 0;
     private int shownThisSearch = 0;
+    private int searchId = 0;
 
     private GameObject toastInstance;
     private TextMeshProUGUI toastText;
     private Coroutine hideMessageRoutine;
+    private ResultCardView busyCard;
 
     void Awake()
     {
         apiToken = PlayerPrefs.GetString(TokenPrefKey, DefaultToken);
+
+        // Results are always shown as a responsive 2-column grid
+        ResultsGridLayout.Ensure(resultsParent);
     }
 
     /// <summary>Call from a settings UI input field to store the token once.</summary>
@@ -76,10 +88,12 @@ public class SketchfabAPIManager : MonoBehaviour
         nextPageUrl = null;
         pagesLeftToAutoLoad = loadInfiniteNoLimit ? 9999 : autoLoadPages;
         shownThisSearch = 0;
+        searchId++; // responses from older searches are ignored
         ClearResults();
-        
-        string initialUrl = $"https://api.sketchfab.com/v3/search?type=models&downloadable=true&count=24&q={UnityWebRequest.EscapeURL(currentQuery)}";
-        StartCoroutine(FetchPageCoroutine(initialUrl, isNewSearch: true));
+        SpawnSkeletons(); // shimmering placeholder cards until the first page arrives
+
+        string initialUrl = $"https://api.sketchfab.com/v3/search?type=models&downloadable=true&count={PageSize}&q={UnityWebRequest.EscapeURL(currentQuery)}";
+        StartCoroutine(FetchPageCoroutine(initialUrl, isNewSearch: true, searchId));
     }
 
     /// <summary>Called by Endless Scrolling (SearchUI) when scrolling near viewport bottom.</summary>
@@ -93,13 +107,20 @@ public class SketchfabAPIManager : MonoBehaviour
             return;
         }
 
+        if (shownThisSearch >= maxTotalResults)
+        {
+            Debug.Log($"[SketchfabAPIManager] Reached maxTotalResults ({maxTotalResults}); not loading more.");
+            return;
+        }
+
         Debug.Log($"[SketchfabAPIManager] Fetching next page: {nextPageUrl}");
-        StartCoroutine(FetchPageCoroutine(nextPageUrl, isNewSearch: false));
+        StartCoroutine(FetchPageCoroutine(nextPageUrl, isNewSearch: false, searchId));
     }
 
-    private IEnumerator FetchPageCoroutine(string url, bool isNewSearch)
+    private IEnumerator FetchPageCoroutine(string url, bool isNewSearch, int requestSearchId)
     {
         isFetchingPage = true;
+        string json = null;
 
         using (UnityWebRequest request = UnityWebRequest.Get(url))
         {
@@ -107,19 +128,30 @@ public class SketchfabAPIManager : MonoBehaviour
 
             yield return request.SendWebRequest();
 
+            // A newer search started while this was loading: drop the result and leave the flag to the newer request
+            if (requestSearchId != searchId) yield break;
+
             if (request.result != UnityWebRequest.Result.Success)
             {
                 Debug.LogError($"[SketchfabAPIManager] Page request failed ({request.responseCode}): {request.error}");
                 if (isNewSearch)
+                {
+                    ClearResults(); // remove skeleton cards
                     ShowMessage("Couldn't reach Sketchfab. Check your internet connection and try again.");
+                }
             }
             else
             {
-                ParseResults(request.downloadHandler.text, isNewSearch);
+                json = request.downloadHandler.text;
             }
         }
 
+        // Must be cleared BEFORE parsing: ParseResults chains FetchNextPage() for auto-loading,
+        // which returns immediately while isFetchingPage is still true (this was why only 24 results ever appeared).
         isFetchingPage = false;
+
+        if (json != null)
+            ParseResults(json, isNewSearch);
     }
 
     private void ParseResults(string json, bool isNewSearch)
@@ -136,7 +168,7 @@ public class SketchfabAPIManager : MonoBehaviour
         }
         else if (!string.IsNullOrEmpty(cursorToken))
         {
-            nextPageUrl = $"https://api.sketchfab.com/v3/search?type=models&downloadable=true&count=24&q={UnityWebRequest.EscapeURL(currentQuery ?? "")}&cursor={UnityWebRequest.EscapeURL(cursorToken)}";
+            nextPageUrl = $"https://api.sketchfab.com/v3/search?type=models&downloadable=true&count={PageSize}&q={UnityWebRequest.EscapeURL(currentQuery ?? "")}&cursor={UnityWebRequest.EscapeURL(cursorToken)}";
         }
         else
         {
@@ -159,8 +191,11 @@ public class SketchfabAPIManager : MonoBehaviour
         }
 
         int skipped = 0;
+        int indexInPage = 0;
         foreach (var model in results)
         {
+            if (shownThisSearch >= maxTotalResults) break;
+
             // Safety net on top of the downloadable=true query filter:
             // never show a card the user can't actually download.
             if (!IsFreeDownloadable(model))
@@ -171,6 +206,8 @@ public class SketchfabAPIManager : MonoBehaviour
 
             string name = model.Value<string>("name") ?? "Untitled";
             string uid  = model.Value<string>("uid")  ?? string.Empty;
+            string authorName = model["user"]?.Value<string>("displayName");
+            if (string.IsNullOrWhiteSpace(authorName)) authorName = model["user"]?.Value<string>("username");
 
             string thumbnailUrl = null;
             var images = (JArray)model["thumbnails"]?["images"];
@@ -198,27 +235,29 @@ public class SketchfabAPIManager : MonoBehaviour
                     thumbnailUrl = images.Last.Value<string>("url");
             }
 
-            GameObject item = Instantiate(thumbnailPrefab, resultsParent);
+            // Premium card (rounded glass, glow, badge, title + author); see ResultCardView
+            ResultCardView card = CreateCard();
+            card.SetInfo(name, authorName);
+            card.SetAppearDelay(indexInPage * 0.035f); // staggered pop-in
+            indexInPage++;
 
-            var title = item.GetComponentInChildren<TextMeshProUGUI>(true);
-            if (title) title.text = name;
-
-            var img = item.GetComponentInChildren<RawImage>(true);
+            var img = card.Thumbnail;
             if (!string.IsNullOrEmpty(thumbnailUrl) && img)
                 StartCoroutine(LoadThumbnail(thumbnailUrl, img));
 
-            var btn = item.GetComponent<Button>();
+            var btn = card.GetComponent<Button>();
             if (btn != null)
             {
                 string capturedUid = uid;
-                btn.onClick.AddListener(() => OnModelSelected(capturedUid));
+                ResultCardView capturedCard = card;
+                btn.onClick.AddListener(() => OnModelSelected(capturedUid, capturedCard));
             }
             shownThisSearch++;
         }
 
         Debug.Log($"[SketchfabAPIManager] Loaded {results.Count - skipped} models ({skipped} skipped as not downloadable). Next page available: {!string.IsNullOrEmpty(nextPageUrl)}");
 
-        bool hasNextPage = !string.IsNullOrEmpty(nextPageUrl);
+        bool hasNextPage = !string.IsNullOrEmpty(nextPageUrl) && shownThisSearch < maxTotalResults;
 
         // Automatically load the next page if we have auto-load remaining
         if (pagesLeftToAutoLoad > 0 && hasNextPage)
@@ -229,6 +268,25 @@ public class SketchfabAPIManager : MonoBehaviour
         else if (shownThisSearch == 0 && !hasNextPage)
         {
             ShowMessage($"No free downloadable models found for \"{currentQuery}\".");
+        }
+    }
+
+    private ResultCardView CreateCard()
+    {
+        GameObject item = Instantiate(thumbnailPrefab, resultsParent);
+        var card = item.GetComponent<ResultCardView>();
+        if (card == null) card = item.AddComponent<ResultCardView>();
+        return card;
+    }
+
+    private void SpawnSkeletons()
+    {
+        if (thumbnailPrefab == null || resultsParent == null) return;
+        for (int i = 0; i < skeletonCount; i++)
+        {
+            var card = CreateCard();
+            card.SetSkeleton();
+            card.SetAppearDelay(i * 0.04f);
         }
     }
 
@@ -249,11 +307,11 @@ public class SketchfabAPIManager : MonoBehaviour
 
             if (request.result == UnityWebRequest.Result.Success)
             {
+                Texture2D texture = DownloadHandlerTexture.GetContent(request);
                 if (image != null)
-                {
-                    Texture2D texture = DownloadHandlerTexture.GetContent(request);
                     image.texture = texture;
-                }
+                else
+                    Destroy(texture); // card was removed (new search) while loading: don't leak GPU memory
             }
             else
             {
@@ -279,10 +337,12 @@ public class SketchfabAPIManager : MonoBehaviour
         }
     }
 
-    private void OnModelSelected(string uid)
+    private void OnModelSelected(string uid, ResultCardView card)
     {
         // Ignore extra taps while a model is already downloading
         if (isDownloading) return;
+        busyCard = card;
+        if (busyCard != null) busyCard.SetBusy(true); // card glows while its model downloads
         StartCoroutine(FetchDownloadLink(uid));
     }
 
@@ -348,6 +408,8 @@ public class SketchfabAPIManager : MonoBehaviour
     private void FailDownload(string userMessage)
     {
         isDownloading = false;
+        if (busyCard != null) busyCard.SetBusy(false);
+        busyCard = null;
         ShowMessage(userMessage);
     }
 
@@ -395,29 +457,34 @@ public class SketchfabAPIManager : MonoBehaviour
         toastInstance = new GameObject("MessageToast", typeof(RectTransform), typeof(Image));
         var rect = (RectTransform)toastInstance.transform;
         rect.SetParent(canvas.transform, false);
-        rect.anchorMin = new Vector2(0.05f, 0.04f);
-        rect.anchorMax = new Vector2(0.95f, 0.04f);
+        rect.anchorMin = new Vector2(0.12f, 0.045f);
+        rect.anchorMax = new Vector2(0.88f, 0.045f);
         rect.pivot = new Vector2(0.5f, 0f);
-        rect.sizeDelta = new Vector2(0f, 140f);
+        rect.sizeDelta = new Vector2(0f, 120f);
 
+        // Dark glass pill with a thin cyan border, matching the cards
         var bg = toastInstance.GetComponent<Image>();
-        bg.color = new Color(0f, 0f, 0f, 0.8f);
+        bg.color = new Color(0.05f, 0.07f, 0.10f, 0.94f);
         bg.raycastTarget = false;
+        var shape = toastInstance.AddComponent<UIRoundedCorners>();
+        shape.SetRadius(9999f);
+        shape.SetBorder(2f);
 
         var textGO = new GameObject("Text", typeof(RectTransform));
         var textRect = (RectTransform)textGO.transform;
         textRect.SetParent(rect, false);
         textRect.anchorMin = Vector2.zero;
         textRect.anchorMax = Vector2.one;
-        textRect.offsetMin = new Vector2(24f, 12f);
-        textRect.offsetMax = new Vector2(-24f, -12f);
+        textRect.offsetMin = new Vector2(48f, 12f);
+        textRect.offsetMax = new Vector2(-48f, -12f);
 
         toastText = textGO.AddComponent<TextMeshProUGUI>();
         toastText.alignment = TextAlignmentOptions.Center;
         toastText.enableAutoSizing = true;
         toastText.fontSizeMin = 18f;
-        toastText.fontSizeMax = 40f;
-        toastText.color = Color.white;
+        toastText.fontSizeMax = 38f;
+        toastText.fontStyle = FontStyles.Bold;
+        toastText.color = new Color(0.90f, 0.96f, 1f, 1f);
         toastText.raycastTarget = false;
 
         toastInstance.SetActive(false);
