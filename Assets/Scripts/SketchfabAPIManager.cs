@@ -24,6 +24,7 @@ public class SketchfabAPIManager : MonoBehaviour
     public bool loadInfiniteNoLimit = false;
 
     private string apiToken;
+    private string currentQuery = null;
     private string nextPageUrl = null;
     private bool isFetchingPage = false;
     private int pagesLeftToAutoLoad = 0;
@@ -59,11 +60,12 @@ public class SketchfabAPIManager : MonoBehaviour
             return;
         }
 
+        currentQuery = query.Trim();
         nextPageUrl = null;
         pagesLeftToAutoLoad = loadInfiniteNoLimit ? 9999 : autoLoadPages;
         ClearResults();
         
-        string initialUrl = "https://api.sketchfab.com/v3/search?type=models&q=" + UnityWebRequest.EscapeURL(query);
+        string initialUrl = $"https://api.sketchfab.com/v3/search?type=models&downloadable=true&count=24&q={UnityWebRequest.EscapeURL(currentQuery)}";
         StartCoroutine(FetchPageCoroutine(initialUrl, isNewSearch: true));
     }
 
@@ -108,7 +110,21 @@ public class SketchfabAPIManager : MonoBehaviour
         JObject data = JObject.Parse(json);
         
         // Extract next page cursor URL if available
-        nextPageUrl = data["next"]?.ToString() ?? data["cursors"]?["next"]?.ToString();
+        string rawNext = data["next"]?.ToString();
+        string cursorToken = data["cursors"]?["next"]?.ToString();
+
+        if (!string.IsNullOrEmpty(rawNext) && rawNext.StartsWith("http", System.StringComparison.OrdinalIgnoreCase))
+        {
+            nextPageUrl = rawNext;
+        }
+        else if (!string.IsNullOrEmpty(cursorToken))
+        {
+            nextPageUrl = $"https://api.sketchfab.com/v3/search?type=models&downloadable=true&count=24&q={UnityWebRequest.EscapeURL(currentQuery ?? "")}&cursor={UnityWebRequest.EscapeURL(cursorToken)}";
+        }
+        else
+        {
+            nextPageUrl = null;
+        }
 
         JArray results = (JArray)data["results"];
 
