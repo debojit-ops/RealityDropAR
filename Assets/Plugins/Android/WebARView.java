@@ -86,7 +86,6 @@ public class WebARView {
 
             // Keep the AR page's renderer at top priority (smooth frame rate)
             if (Build.VERSION.SDK_INT >= 26) wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
-            wv.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
             wv.setWebChromeClient(new WebChromeClient() {
                 @Override

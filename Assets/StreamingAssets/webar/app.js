@@ -76,43 +76,20 @@ const sun = new THREE.DirectionalLight(0xffffff, 1.6)
 sun.position.set(1.2, 3, 1.6)
 scene.add(sun)
 
-// Soft round glow (canvas texture) used by the reticle halo
-function glowTexture(inner = 0.0, stops = [[0, 1], [0.35, 0.55], [1, 0]]) {
-  const c = document.createElement('canvas'); c.width = c.height = 128
-  const g = c.getContext('2d')
-  const grad = g.createRadialGradient(64, 64, 64 * inner, 64, 64, 64)
-  for (const [at, a] of stops) grad.addColorStop(at, `rgba(255,255,255,${a})`)
-  g.fillStyle = grad; g.fillRect(0, 0, 128, 128)
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
-  return t
-}
-
-// Placement reticle (bigger, glowing): halo + disc + solid ring + rotating dashed arc + centre dot.
-// Its size follows the distance (see frame): far away it grows so it stays easy to see, close up it shrinks.
-const NEON = new THREE.Color(0x3ef2ff)
-const RETICLE_RADIUS = 0.2 // metres at 1.5 m distance
+// Placement reticle: neon ring + soft disc, lying on the ground
 const reticle = new THREE.Group()
-const reticleSpin = new THREE.Group()
-let reticleScale = 1
 {
-  const add = (mesh, order = 2) => { mesh.rotation.x = -Math.PI / 2; mesh.renderOrder = order; return mesh }
-  const basic = (opts) => new THREE.MeshBasicMaterial({ color: NEON, transparent: true, depthWrite: false, ...opts })
-  const r = RETICLE_RADIUS
-  const halo = add(new THREE.Mesh(new THREE.PlaneGeometry(r * 3.2, r * 3.2),
-    basic({ map: glowTexture(0.45, [[0, 0], [0.55, 0.55], [0.75, 0.18], [1, 0]]), blending: THREE.AdditiveBlending, opacity: 0.9 })), 1)
-  const disc = add(new THREE.Mesh(new THREE.CircleGeometry(r * 0.9, 96), basic({ opacity: 0.12 })))
-  const ring = add(new THREE.Mesh(new THREE.RingGeometry(r * 0.9, r, 96), basic({ opacity: 0.95 })))
-  const dot = add(new THREE.Mesh(new THREE.CircleGeometry(r * 0.07, 32), basic({ color: 0xffffff, opacity: 0.95 })))
-  // Dashed outer arc that slowly rotates
-  for (let i = 0; i < 6; i++) {
-    const a0 = i / 6 * Math.PI * 2
-    reticleSpin.add(add(new THREE.Mesh(new THREE.RingGeometry(r * 1.1, r * 1.16, 24, 1, a0, Math.PI / 6), basic({ opacity: 0.8 }))))
-  }
-  reticle.add(halo, disc, ring, dot, reticleSpin)
+  const neon = new THREE.Color(0x3ef2ff)
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.105, 0.125, 72),
+    new THREE.MeshBasicMaterial({ color: neon, transparent: true, opacity: 0.95, depthWrite: false }))
+  const disc = new THREE.Mesh(new THREE.CircleGeometry(0.105, 72),
+    new THREE.MeshBasicMaterial({ color: neon, transparent: true, opacity: 0.14, depthWrite: false }))
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(0.012, 24),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false }))
+  for (const m of [ring, disc, dot]) { m.rotation.x = -Math.PI / 2; m.renderOrder = 2; reticle.add(m) }
   reticle.visible = false
   scene.add(reticle)
 }
-
 
 // Soft contact shadow under the model
 function shadowTexture() {
@@ -361,16 +338,10 @@ function frame() {
     if (!trackingOk) setState('scanning')
     else if (!p) setState('aim')
     else {
-      const wasReady = state === 'ready'
       setState('ready')
       reticle.position.copy(p).setY(0.003)
-      // Distance-aware size: ~1x at 1.5 m, bigger further away, smaller up close (smoothed)
-      const d = camera.position.distanceTo(p)
-      const want = THREE.MathUtils.clamp(d / 1.5, 0.55, 2.6)
-      reticleScale = wasReady ? reticleScale + (want - reticleScale) * (1 - Math.exp(-dt * 8)) : want
-      const breathe = 1 + 0.05 * Math.sin(performance.now() / 260)
-      reticle.scale.setScalar(reticleScale * breathe)
-      reticleSpin.rotation.y += dt * 0.9
+      const s = 1 + 0.06 * Math.sin(performance.now() / 260)
+      reticle.scale.setScalar(s)
     }
   }
 
@@ -390,11 +361,8 @@ function frame() {
 
 // ------------------------------------------------------------------ XR8
 
-// Render resolution: 1.6x CSS pixels (sharp on phones, ~35% fewer pixels than 2x).
-// Drops to 1.25x automatically if the frame rate stays low.
-let renderScale = 1.6
 function sizeCanvas() {
-  const dpr = Math.min(window.devicePixelRatio || 1, renderScale)
+  const dpr = Math.min(window.devicePixelRatio || 1, 2) // full sharpness (as before)
   canvas.width = Math.round(innerWidth * dpr)
   canvas.height = Math.round(innerHeight * dpr)
 }
@@ -499,19 +467,12 @@ addEventListener('resize', sizeCanvas)
 
 // ------------------------------------------------------------------ frame rate
 
-let frames = 0, fps = 0, lowFpsWindows = 0
+let frames = 0, fps = 0
 function countFrame() { frames++ }
 setInterval(() => {                      // every 2 s: FPS + tracking log (logcat tag RealityDropWebAR)
   fps = frames / 2; frames = 0
   if (state === 'starting') return
   log(`fps=${fps.toFixed(0)} render=${canvas.width}x${canvas.height} state=${state} tracking=${trackingStatus} travel=${travel.toFixed(2)}m`)
-  // Three slow windows in a row (< 24 FPS): render fewer pixels
-  lowFpsWindows = fps > 0 && fps < 24 ? lowFpsWindows + 1 : 0
-  if (lowFpsWindows >= 3 && renderScale > 1.25) {
-    renderScale = 1.25
-    sizeCanvas()
-    log('Low FPS: render scale lowered to 1.25x')
-  }
 }, 2000)
 
 // ------------------------------------------------------------------ photo capture
