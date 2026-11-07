@@ -114,15 +114,18 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 - [x] Texture cleanup on new search (fixes out-of-memory crashes)
 - [~] **2-column (2x2) grid**: built in `UnderProgress.unity`, **not live yet** (live `SampleScene` is still 1-column)
 - [ ] Move the finished `UnderProgress` UI into the build as the main scene (or port its grid into SampleScene)
-- [ ] Loading spinner while searching, plus "No results" / network-error messages on screen
+- [x] Only free, downloadable models shown (`downloadable=true` query + per-result `isDownloadable` check in `IsFreeDownloadable`)
+- [x] "No results" / network-error messages on screen (`ShowMessage`: uses `statusText` if assigned, else an auto-created toast)
+- [ ] Loading spinner while searching
 - [ ] Cap the total number of cards, or recycle them, so long scrolling doesn't use too much memory
 
 ### B. Download & Load: ~75%
 - [x] Fetch GLB download link
 - [x] Download zip + extract `.glb` to `persistentDataPath/Models`
 - [x] glTFast loading + material sanitizing
-- [ ] **Download progress UI** (percent / spinner) and a way to cancel
-- [ ] Message on screen when a download fails (401/403/no GLB), instead of only a log
+- [~] **Download progress UI**: a "Downloading model..." message shows now; still no percent/spinner or cancel
+- [x] Message on screen when a download fails (401/403/404, no GLB, network, unzip)
+- [x] Extra taps ignored while a download is running
 - [ ] Skip re-downloading if the model is already cached; clear out old models to free disk space
 - [ ] Warn about or reject very heavy models (high poly count / file size) before loading
 
@@ -175,4 +178,5 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 ## 8. Change Log
 Add newest entries at the top: `YYYY-MM-DD — what changed — files`.
 
+- 2026-11-07 — Free-downloadable-only safety filter, on-screen search/download error messages, double-tap guard — `SketchfabAPIManager.cs`
 - 2026-11-07 — Created this guide after a full project review — `PROJECT_GUIDE.md`, `CLAUDE.md`

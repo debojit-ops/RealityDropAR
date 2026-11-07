@@ -23,11 +23,23 @@ public class SketchfabAPIManager : MonoBehaviour
     [Tooltip("If true, it will attempt to load EVERY result Sketchfab has. WARNING: High risk of crashing mobile devices out of memory!")]
     public bool loadInfiniteNoLimit = false;
 
+    [Header("User Messages")]
+    [Tooltip("Optional text for status/error messages. If empty, a temporary toast is created on the results' canvas.")]
+    public TextMeshProUGUI statusText;
+    [Tooltip("Seconds a message stays visible.")]
+    public float messageDuration = 3f;
+
     private string apiToken;
     private string currentQuery = null;
     private string nextPageUrl = null;
     private bool isFetchingPage = false;
+    private bool isDownloading = false;
     private int pagesLeftToAutoLoad = 0;
+    private int shownThisSearch = 0;
+
+    private GameObject toastInstance;
+    private TextMeshProUGUI toastText;
+    private Coroutine hideMessageRoutine;
 
     void Awake()
     {
@@ -63,6 +75,7 @@ public class SketchfabAPIManager : MonoBehaviour
         currentQuery = query.Trim();
         nextPageUrl = null;
         pagesLeftToAutoLoad = loadInfiniteNoLimit ? 9999 : autoLoadPages;
+        shownThisSearch = 0;
         ClearResults();
         
         string initialUrl = $"https://api.sketchfab.com/v3/search?type=models&downloadable=true&count=24&q={UnityWebRequest.EscapeURL(currentQuery)}";
@@ -88,18 +101,22 @@ public class SketchfabAPIManager : MonoBehaviour
     {
         isFetchingPage = true;
 
-        UnityWebRequest request = UnityWebRequest.Get(url);
-        request.SetRequestHeader("Authorization", "Token " + apiToken);
-
-        yield return request.SendWebRequest();
-
-        if (request.result != UnityWebRequest.Result.Success)
+        using (UnityWebRequest request = UnityWebRequest.Get(url))
         {
-            Debug.LogError($"[SketchfabAPIManager] Page request failed ({request.responseCode}): {request.error}");
-        }
-        else
-        {
-            ParseResults(request.downloadHandler.text, isNewSearch);
+            request.SetRequestHeader("Authorization", "Token " + apiToken);
+
+            yield return request.SendWebRequest();
+
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                Debug.LogError($"[SketchfabAPIManager] Page request failed ({request.responseCode}): {request.error}");
+                if (isNewSearch)
+                    ShowMessage("Couldn't reach Sketchfab. Check your internet connection and try again.");
+            }
+            else
+            {
+                ParseResults(request.downloadHandler.text, isNewSearch);
+            }
         }
 
         isFetchingPage = false;
@@ -136,11 +153,22 @@ public class SketchfabAPIManager : MonoBehaviour
         if (results == null || results.Count == 0)
         {
             Debug.Log("[SketchfabAPIManager] No models found.");
+            if (shownThisSearch == 0)
+                ShowMessage($"No free downloadable models found for \"{currentQuery}\".");
             return;
         }
 
+        int skipped = 0;
         foreach (var model in results)
         {
+            // Safety net on top of the downloadable=true query filter:
+            // never show a card the user can't actually download.
+            if (!IsFreeDownloadable(model))
+            {
+                skipped++;
+                continue;
+            }
+
             string name = model.Value<string>("name") ?? "Untitled";
             string uid  = model.Value<string>("uid")  ?? string.Empty;
 
@@ -185,16 +213,32 @@ public class SketchfabAPIManager : MonoBehaviour
                 string capturedUid = uid;
                 btn.onClick.AddListener(() => OnModelSelected(capturedUid));
             }
+            shownThisSearch++;
         }
 
-        Debug.Log($"[SketchfabAPIManager] Loaded {results.Count} models. Next page available: {!string.IsNullOrEmpty(nextPageUrl)}");
+        Debug.Log($"[SketchfabAPIManager] Loaded {results.Count - skipped} models ({skipped} skipped as not downloadable). Next page available: {!string.IsNullOrEmpty(nextPageUrl)}");
+
+        bool hasNextPage = !string.IsNullOrEmpty(nextPageUrl);
 
         // Automatically load the next page if we have auto-load remaining
-        if (pagesLeftToAutoLoad > 0 && !string.IsNullOrEmpty(nextPageUrl))
+        if (pagesLeftToAutoLoad > 0 && hasNextPage)
         {
             pagesLeftToAutoLoad--;
             FetchNextPage();
         }
+        else if (shownThisSearch == 0 && !hasNextPage)
+        {
+            ShowMessage($"No free downloadable models found for \"{currentQuery}\".");
+        }
+    }
+
+    /// <summary>
+    /// True if the search result is flagged as downloadable. Missing flag = trust the query filter.
+    /// </summary>
+    private static bool IsFreeDownloadable(JToken model)
+    {
+        bool? downloadable = model.Value<bool?>("isDownloadable");
+        return downloadable != false;
     }
 
     private IEnumerator LoadThumbnail(string url, RawImage image)
@@ -237,44 +281,148 @@ public class SketchfabAPIManager : MonoBehaviour
 
     private void OnModelSelected(string uid)
     {
+        // Ignore extra taps while a model is already downloading
+        if (isDownloading) return;
         StartCoroutine(FetchDownloadLink(uid));
     }
 
     private IEnumerator FetchDownloadLink(string uid)
     {
+        isDownloading = true;
+        ShowMessage("Downloading model...", autoHide: false);
+
         string url = $"https://api.sketchfab.com/v3/models/{uid}/download";
+        string glbUrl = null;
 
-        UnityWebRequest request = UnityWebRequest.Get(url);
-        request.SetRequestHeader("Authorization", "Token " + apiToken);
-
-        yield return request.SendWebRequest();
-
-        if (request.result != UnityWebRequest.Result.Success)
+        using (UnityWebRequest request = UnityWebRequest.Get(url))
         {
-            Debug.LogError("[SketchfabAPIManager] Download link fetch failed (" + request.responseCode + "): " + request.error);
-            yield break;
-        }
+            request.SetRequestHeader("Authorization", "Token " + apiToken);
 
-        var data   = JObject.Parse(request.downloadHandler.text);
-        string glbUrl = data["glb"]?["url"]?.ToString();
+            yield return request.SendWebRequest();
+
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                Debug.LogError("[SketchfabAPIManager] Download link fetch failed (" + request.responseCode + "): " + request.error);
+                FailDownload(request.responseCode == 401 || request.responseCode == 403 || request.responseCode == 404
+                    ? "This model isn't available for download. Please try another one."
+                    : "Couldn't reach Sketchfab. Check your internet connection and try again.");
+                yield break;
+            }
+
+            try
+            {
+                var data = JObject.Parse(request.downloadHandler.text);
+                glbUrl = data["glb"]?["url"]?.ToString();
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError("[SketchfabAPIManager] Could not parse download response: " + ex.Message);
+            }
+        }
 
         if (string.IsNullOrEmpty(glbUrl))
         {
             Debug.LogError("[SketchfabAPIManager] No GLB URL in response for model " + uid);
+            FailDownload("This model isn't available in a supported format. Please try another one.");
             yield break;
         }
 
         string saveFolder = Path.Combine(Application.persistentDataPath, "Models");
-        StartCoroutine(ModelDownloader.DownloadAndExtractGLB(glbUrl, saveFolder, (glbPath) =>
+        yield return ModelDownloader.DownloadAndExtractGLB(glbUrl, saveFolder, (glbPath) =>
         {
-            if (!string.IsNullOrEmpty(glbPath))
+            if (string.IsNullOrEmpty(glbPath))
             {
-                // New model selected — clear the cached instance so AR re-loads fresh
-                ModelLoader.ClearCache();
-                PlayerPrefs.SetString("LastModelPath", glbPath);
-                PlayerPrefs.Save();
-                UnityEngine.SceneManagement.SceneManager.LoadScene("PreviewScene_new");
+                FailDownload("Download failed. Please try again or pick another model.");
+                return;
             }
-        }));
+
+            // New model selected — clear the cached instance so AR re-loads fresh
+            ModelLoader.ClearCache();
+            PlayerPrefs.SetString("LastModelPath", glbPath);
+            PlayerPrefs.Save();
+            isDownloading = false;
+            UnityEngine.SceneManagement.SceneManager.LoadScene("PreviewScene_new");
+        });
     }
+
+    private void FailDownload(string userMessage)
+    {
+        isDownloading = false;
+        ShowMessage(userMessage);
+    }
+
+    #region User Messages
+
+    /// <summary>Shows a short message to the user (status text if assigned, otherwise a toast).</summary>
+    private void ShowMessage(string message, bool autoHide = true)
+    {
+        TextMeshProUGUI target = statusText != null ? statusText : GetOrCreateToast();
+        if (target == null)
+        {
+            Debug.Log("[SketchfabAPIManager] " + message);
+            return;
+        }
+
+        target.text = message;
+        target.gameObject.SetActive(true);
+        if (statusText == null && toastInstance != null)
+        {
+            toastInstance.SetActive(true);
+            toastInstance.transform.SetAsLastSibling();
+        }
+
+        if (hideMessageRoutine != null) StopCoroutine(hideMessageRoutine);
+        hideMessageRoutine = autoHide ? StartCoroutine(HideMessageAfterDelay()) : null;
+    }
+
+    private IEnumerator HideMessageAfterDelay()
+    {
+        yield return new WaitForSeconds(messageDuration);
+        if (statusText != null) statusText.text = string.Empty;
+        if (toastInstance != null) toastInstance.SetActive(false);
+        hideMessageRoutine = null;
+    }
+
+    private TextMeshProUGUI GetOrCreateToast()
+    {
+        if (toastText != null) return toastText;
+
+        Canvas canvas = resultsParent != null ? resultsParent.GetComponentInParent<Canvas>() : null;
+        if (canvas == null) canvas = FindFirstObjectByType<Canvas>();
+        if (canvas == null) return null;
+        canvas = canvas.rootCanvas;
+
+        toastInstance = new GameObject("MessageToast", typeof(RectTransform), typeof(Image));
+        var rect = (RectTransform)toastInstance.transform;
+        rect.SetParent(canvas.transform, false);
+        rect.anchorMin = new Vector2(0.05f, 0.04f);
+        rect.anchorMax = new Vector2(0.95f, 0.04f);
+        rect.pivot = new Vector2(0.5f, 0f);
+        rect.sizeDelta = new Vector2(0f, 140f);
+
+        var bg = toastInstance.GetComponent<Image>();
+        bg.color = new Color(0f, 0f, 0f, 0.8f);
+        bg.raycastTarget = false;
+
+        var textGO = new GameObject("Text", typeof(RectTransform));
+        var textRect = (RectTransform)textGO.transform;
+        textRect.SetParent(rect, false);
+        textRect.anchorMin = Vector2.zero;
+        textRect.anchorMax = Vector2.one;
+        textRect.offsetMin = new Vector2(24f, 12f);
+        textRect.offsetMax = new Vector2(-24f, -12f);
+
+        toastText = textGO.AddComponent<TextMeshProUGUI>();
+        toastText.alignment = TextAlignmentOptions.Center;
+        toastText.enableAutoSizing = true;
+        toastText.fontSizeMin = 18f;
+        toastText.fontSizeMax = 40f;
+        toastText.color = Color.white;
+        toastText.raycastTarget = false;
+
+        toastInstance.SetActive(false);
+        return toastText;
+    }
+
+    #endregion
 }
