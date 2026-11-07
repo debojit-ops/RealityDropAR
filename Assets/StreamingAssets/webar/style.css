@@ -1,3 +1,7 @@
+@font-face { font-family: 'Inter'; src: url('fonts/Inter-Regular.ttf') format('truetype'); font-weight: 400 500; }
+@font-face { font-family: 'Inter'; src: url('fonts/Inter-SemiBold.ttf') format('truetype'); font-weight: 600; }
+@font-face { font-family: 'Inter'; src: url('fonts/Inter-Bold.ttf') format('truetype'); font-weight: 700 800; }
+
 :root {
   --neon: #3ef2ff;
   --glass: rgba(10, 16, 24, 0.62);
@@ -9,7 +13,7 @@
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body {
   margin: 0; height: 100%; overflow: hidden; background: #000; color: var(--text);
-  font-family: Inter, system-ui, -apple-system, Roboto, sans-serif;
+  font-family: 'Inter', Roboto, 'Noto Sans', sans-serif;
   user-select: none; -webkit-user-select: none; touch-action: none;
 }
 canvas#xr { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
@@ -92,3 +96,5 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 /* Bars only catch touches on their buttons; the rest goes to the gesture layer */
 #top, #bottom { pointer-events: none; }
 #top > *, #bottom > * { pointer-events: auto; }
+
+button, select { font-family: inherit; }

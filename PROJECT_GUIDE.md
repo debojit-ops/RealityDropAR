@@ -230,6 +230,7 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 ## 8. Change Log
 Add newest entries at the top: `YYYY-MM-DD — what changed — files`.
 
+- 2026-11-07 — (xr8-webar) Fix black camera feed: Unity's activity has hardwareAccelerated=false, so the WebView now lives in its own hardware-accelerated full-screen Dialog window; bundled Inter font — `WebARView.java`, `webar/style.css`, `webar/fonts`
 - 2026-11-07 — (branch xr8-webar) 8th Wall XR8 WebAR in an Android WebView — `StreamingAssets/webar/*` (new), `Plugins/Android/WebARView.java` (new), `WebARLauncher.cs` (new), `PreviewUIManager.cs`, `PreviewScreenUI.cs`
 - 2026-11-07 — Download overlay: rotating neon ring + animated ". . ." on the stage text; removed the "Still contacting Sketchfab" message — `DownloadOverlay.cs`, `SketchfabAPIManager.cs`
 - 2026-11-07 — Download priority, polite thumbnail loading, timeouts/timing logs, cached + parallel recommendations — `ThumbnailLoader.cs` (new), `SketchfabAPIManager.cs`, `Model/ModelDownloader.cs`, `RecommendationsPanel.cs`

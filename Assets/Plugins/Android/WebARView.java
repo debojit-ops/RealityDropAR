@@ -2,12 +2,16 @@ package com.realitydrop.webar;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.Dialog;
 import android.graphics.Color;
 import android.net.Uri;
 import android.util.Log;
 import android.view.HapticFeedbackConstants;
 import android.view.KeyEvent;
+import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
@@ -17,7 +21,6 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.FrameLayout;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -41,6 +44,7 @@ public class WebARView {
     private static final String HOST = "appassets.androidplatform.net";
 
     private static WebView webView;
+    private static Dialog dialog;
     private static String modelPath;
     private static String unityObject;
 
@@ -94,16 +98,32 @@ public class WebARView {
 
             wv.addJavascriptInterface(new Bridge(activity), "RealityDropNative");
 
+            // Unity's activity is built with android:hardwareAccelerated="false". A WebView inside it
+            // draws in software, and WebGL canvases (camera feed + 3D) then show black. So the WebView
+            // lives in its own full-screen window with hardware acceleration switched on.
+            Dialog d = new Dialog(activity, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+            Window w = d.getWindow();
+            w.setFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                       WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED);
+            w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+            d.setCancelable(false);
+            d.setContentView(wv, new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             // Android back → let the page decide (close a sheet, or leave AR)
-            wv.setOnKeyListener((v, keyCode, event) -> {
+            d.setOnKeyListener((di, keyCode, event) -> {
                 if (keyCode != KeyEvent.KEYCODE_BACK) return false;
                 if (event.getAction() == KeyEvent.ACTION_UP)
                     wv.evaluateJavascript("window.rdBack ? rdBack() : RealityDropNative.close()", null);
                 return true;
             });
-
-            activity.addContentView(wv, new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            d.show();
+            // Immersive full screen like the app (hide status / navigation bars)
+            w.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+            dialog = d;
+            Log.i(TAG, "WebView hardware accelerated: " + wv.isHardwareAccelerated());
             wv.setFocusable(true);
             wv.setFocusableInTouchMode(true);
             wv.requestFocus();
@@ -119,10 +139,9 @@ public class WebARView {
             if (webView == null) return;
             WebView wv = webView;
             webView = null;
-            ViewGroup parent = (ViewGroup) wv.getParent();
-            if (parent != null) parent.removeView(wv);
             wv.stopLoading();
             wv.loadUrl("about:blank"); // releases the camera immediately
+            if (dialog != null) { dialog.dismiss(); dialog = null; }
             wv.destroy();
             Log.i(TAG, "WebAR closed.");
             if (unityObject != null) {
@@ -183,6 +202,7 @@ public class WebARView {
         if (p.endsWith(".svg")) return "image/svg+xml";
         if (p.endsWith(".png")) return "image/png";
         if (p.endsWith(".glb")) return "model/gltf-binary";
+        if (p.endsWith(".ttf")) return "font/ttf";
         if (p.endsWith("license")) return "text/plain";
         return "application/octet-stream";
     }
