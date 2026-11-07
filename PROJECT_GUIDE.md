@@ -199,11 +199,12 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 
 - [ ] **Before first device test**: lock orientation to Portrait (currently Auto Rotation); set a real package name (currently the template's `com.UnityTechnologies.com.unity.template.urpblank`); for iPhone: enable ARKit in XR Plug-in Management (iOS) + add a Camera Usage Description
 
-### E. Snapshot: 0% ❗
-- [ ] Camera/shutter button in the AR UI
-- [ ] Hide UI (and reticle/planes) → capture with `ScreenCapture.CaptureScreenshotAsTexture()` at end of frame → restore UI
-- [ ] Save to gallery: Android → Pictures/RealityDrop, iOS → Photos. Recommended plugin: **NativeGallery** (yasirkula). Needs the Android storage/media permission on older APIs and `NSPhotoLibraryAddUsageDescription` on iOS.
-- [ ] Flash effect + "Saved to gallery" toast, plus a thumbnail preview with a Share option (optional, NativeShare)
+### E. Snapshot: done on Android (XR8 WebAR) ✅
+- [x] Shutter button in the AR UI (shown after placing) — `webar/index.html`
+- [x] Capture: the WebGL canvas is read right after drawing (`canvas.toDataURL` in `onRender`), so the HTML UI is never in the photo; the reticle is hidden once placed
+- [x] Save to gallery: `WebARView.savePhoto` → MediaStore `Pictures/RealityDrop` (Android 10+, no permission needed); Android 7–9 → app Pictures folder + media scan
+- [x] Flash + thumbnail card "Saved to Gallery" + Share (Android share sheet, `WebARView.sharePhoto`)
+- [ ] Photo resolution = render resolution (1.6x CSS px, about 660×1430 on a 1080p phone); a full-res capture would need a separate high-res render pass
 
 ### F. Stability, Security & Polish: ~30%
 - [x] 60 fps target (`AppPerformanceManager`)
@@ -230,6 +231,7 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 ## 8. Change Log
 Add newest entries at the top: `YYYY-MM-DD — what changed — files`.
 
+- 2026-11-07 — WebAR: removed the pixel-dust effect (laggy); frame rate: render scale 1.6x (auto 1.25x if < 24 FPS for 6 s), WebView renderer priority IMPORTANT + hardware layer, FPS in the 2 s logcat line; photo capture (shutter, flash, save to Pictures/RealityDrop, share) — `webar/app.js`, `webar/index.html`, `webar/style.css`, `WebARView.java`
 - 2026-11-07 — WebAR: bigger glowing placement indicator (0.2 m radius, halo + rotating dashed arc) that scales with distance (0.55x–2.6x, ~1x at 1.5 m); PLACE MODEL plays a blue spiral pixel-dust burst (360 particles, 1.8 s) + ground shockwave and the model grows out of it; `?preview=1` desktop check mode — `webar/app.js`
 - 2026-11-07 — Merged xr8-webar into master: XR8 WebAR is now the Android AR path (tested working on OnePlus CPH2717); AR Foundation ARScene kept for the Editor — `PROJECT_GUIDE.md`
 - 2026-11-07 — (xr8-webar) Fix black camera feed: Unity's activity has hardwareAccelerated=false, so the WebView now lives in its own hardware-accelerated full-screen Dialog window; bundled Inter font — `WebARView.java`, `webar/style.css`, `webar/fonts`

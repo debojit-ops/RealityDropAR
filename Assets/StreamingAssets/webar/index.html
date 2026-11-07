@@ -37,12 +37,23 @@
         <svg id="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
       </div>
     </div>
+    <div id="shutterRow" class="hidden">
+      <button id="shutter" aria-label="Take photo"><span></span></button>
+    </div>
     <button id="place" class="primary" disabled>PLACE MODEL</button>
     <div id="size" class="pill hidden">100%</div>
     <button id="credit" class="credit">XR Engine © Niantic Spatial, Inc. · License</button>
   </footer>
 
   <div id="ring"></div>
+  <div id="flash"></div>
+  <div id="photo" class="pill hidden">
+    <img id="photoThumb" alt="">
+    <span id="photoText">Saving…</span>
+    <button id="share" class="hidden" aria-label="Share">
+      <svg viewBox="0 0 24 24"><path d="M12 15V4M7 9l5-5 5 5"/><path d="M5 14v5h14v-5"/></svg>
+    </button>
+  </div>
 
   <div id="error" class="sheet hidden">
     <h2>AR couldn't start</h2>

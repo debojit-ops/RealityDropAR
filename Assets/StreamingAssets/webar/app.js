@@ -76,7 +76,7 @@ const sun = new THREE.DirectionalLight(0xffffff, 1.6)
 sun.position.set(1.2, 3, 1.6)
 scene.add(sun)
 
-// Soft round glow (canvas texture) used by the reticle halo and the pixel dust
+// Soft round glow (canvas texture) used by the reticle halo
 function glowTexture(inner = 0.0, stops = [[0, 1], [0.35, 0.55], [1, 0]]) {
   const c = document.createElement('canvas'); c.width = c.height = 128
   const g = c.getContext('2d')
@@ -113,101 +113,6 @@ let reticleScale = 1
   scene.add(reticle)
 }
 
-// ------------------------------------------------------------------ placement FX: spiral pixel dust
-
-const DUST_COUNT = 360
-const DUST_TIME = 1.8 // seconds
-const dust = (() => {
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(DUST_COUNT * 3), 3))
-  geo.setAttribute('aAlpha', new THREE.BufferAttribute(new Float32Array(DUST_COUNT), 1))
-  geo.setAttribute('aSize', new THREE.BufferAttribute(new Float32Array(DUST_COUNT), 1))
-  const mat = new THREE.ShaderMaterial({
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-    uniforms: { uMap: { value: glowTexture() }, uColor: { value: new THREE.Color(0x38c8ff) }, uScale: { value: 800 } },
-    vertexShader: `
-      attribute float aAlpha; attribute float aSize; varying float vAlpha; uniform float uScale;
-      void main() {
-        vAlpha = aAlpha;
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = aSize * uScale / max(0.05, -mv.z);
-        gl_Position = projectionMatrix * mv;
-      }`,
-    fragmentShader: `
-      uniform sampler2D uMap; uniform vec3 uColor; varying float vAlpha;
-      void main() {
-        float a = texture2D(uMap, gl_PointCoord).a * vAlpha;
-        if (a < 0.01) discard;
-        vec3 core = mix(uColor, vec3(1.0), smoothstep(0.6, 1.0, a)); // white-hot centres
-        gl_FragColor = vec4(core * a * 1.6, a);
-      }`,
-  })
-  const points = new THREE.Points(geo, mat)
-  points.frustumCulled = false
-  points.visible = false
-  points.renderOrder = 3
-  scene.add(points)
-
-  // Shockwave ring on the ground
-  const wave = new THREE.Mesh(new THREE.RingGeometry(0.965, 1, 128),
-    new THREE.MeshBasicMaterial({ color: NEON, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }))
-  wave.rotation.x = -Math.PI / 2
-  wave.visible = false
-  scene.add(wave)
-
-  const seeds = []
-  let t = -1, height = 0.6, radius = 0.3
-  return {
-    burst(at, modelHeight, modelRadius) {
-      height = Math.max(0.25, modelHeight * 1.25)
-      radius = Math.max(0.15, modelRadius * 1.15)
-      seeds.length = 0
-      for (let i = 0; i < DUST_COUNT; i++) {
-        seeds.push({
-          a: Math.random() * Math.PI * 2,              // start angle
-          r: radius * (0.55 + Math.random() * 0.6),    // orbit radius
-          h: 0.15 + Math.random() * 0.85,              // how high it climbs (fraction)
-          spin: (1.2 + Math.random() * 1.3) * (Math.random() < 0.85 ? 1 : -1), // turns over the effect
-          delay: Math.random() * 0.35,
-          size: 0.035 + Math.random() * 0.05,
-          twinkle: Math.random() * 6.28,
-        })
-      }
-      points.position.copy(at)
-      wave.position.copy(at).setY(0.004)
-      points.visible = wave.visible = true
-      t = 0
-    },
-    update(dt) {
-      if (t < 0) return
-      t += dt
-      const pos = geo.attributes.position.array, alpha = geo.attributes.aAlpha.array, size = geo.attributes.aSize.array
-      for (let i = 0; i < DUST_COUNT; i++) {
-        const s = seeds[i]
-        const k = THREE.MathUtils.clamp((t - s.delay) / (DUST_TIME - s.delay), 0, 1)
-        const rise = 1 - (1 - k) ** 2.2                       // fast start, eases out
-        const ang = s.a + s.spin * Math.PI * 2 * rise
-        const r = s.r * (1 - 0.65 * rise)                      // spiral inwards while rising
-        pos[i * 3] = Math.cos(ang) * r
-        pos[i * 3 + 1] = s.h * height * rise
-        pos[i * 3 + 2] = Math.sin(ang) * r
-        const fade = k <= 0 ? 0 : Math.min(1, k * 6) * (1 - k) ** 1.3
-        alpha[i] = Math.min(1, fade * 1.4) * (0.7 + 0.3 * Math.sin(t * 18 + s.twinkle))
-        size[i] = s.size * (1.2 - 0.5 * k)
-      }
-      geo.attributes.position.needsUpdate = geo.attributes.aAlpha.needsUpdate = geo.attributes.aSize.needsUpdate = true
-      mat.uniforms.uScale.value = (renderer ? renderer.domElement.height : innerHeight) * 0.9
-
-      const w = Math.min(1, t / 0.7)                            // shockwave: 0.7 s
-      wave.scale.setScalar(0.05 + radius * 1.5 * (1 - (1 - w) ** 3))
-      wave.material.opacity = 0.9 * (1 - w)
-      wave.visible = w < 1
-
-      if (t >= DUST_TIME) { t = -1; points.visible = wave.visible = false }
-    },
-    stop() { t = -1; points.visible = wave.visible = false },
-  }
-})()
 
 // Soft contact shadow under the model
 function shadowTexture() {
@@ -232,7 +137,6 @@ scene.add(placed)
 
 let mixer = null, actions = [], current = null, paused = false
 let modelReady = false
-let fittedHeight = 0.6, fittedRadius = 0.3 // model size at 100% (metres), for the placement effect
 
 // ------------------------------------------------------------------ model
 
@@ -258,8 +162,6 @@ function loadModel() {
     fitted.add(root)
     const footprint = Math.max(size.x, size.z) / maxDim * TUNE.targetSize
     shadow.scale.setScalar(Math.max(0.15, footprint * 1.35))
-    fittedHeight = size.y / maxDim * TUNE.targetSize
-    fittedRadius = footprint / 2
 
     if (gltf.animations?.length) setupAnimations(root, gltf.animations)
     modelReady = true
@@ -345,6 +247,7 @@ function setState(next) {
   $('ring').classList.toggle('hidden', next === 'ready' || next === 'placed')
   $('reset').classList.toggle('hidden', next !== 'placed')
   $('size').classList.toggle('hidden', next !== 'placed')
+  $('shutterRow').classList.toggle('hidden', next !== 'placed')
   $('anim').classList.toggle('hidden', next !== 'placed' || !mixer)
   reticle.visible = next === 'ready'
   placed.visible = next === 'placed'
@@ -397,16 +300,14 @@ function placeModel() {
   targetYaw = Math.atan2(camera.position.x - targetPos.x, camera.position.z - targetPos.z) // face the user
   placed.rotation.y = targetYaw
   userScale = 1
-  popT = -0.45 // the dust swirls first; the model materialises inside it
-  placed.scale.setScalar(0.0001)
-  dust.burst(targetPos, fittedHeight, fittedRadius)
+  popT = 0
   setState('placed')
   updateSizeLabel()
   native?.haptic?.()
   log('Placed at', targetPos.toArray().map(v => v.toFixed(2)).join(', '))
 }
 $('place').onclick = placeModel
-$('reset').onclick = () => { dust.stop(); setState(trackingOk ? 'aim' : 'scanning') }
+$('reset').onclick = () => { setState(trackingOk ? 'aim' : 'scanning') }
 
 function updateSizeLabel() { $('size').textContent = `${Math.round(userScale * 100)}%` }
 
@@ -478,20 +379,22 @@ function frame() {
     placed.position.lerp(targetPos, 1 - Math.exp(-dt * 14))
     let dy = targetYaw - placed.rotation.y
     placed.rotation.y += dy * (1 - Math.exp(-dt * 14))
-    popT = Math.min(1, popT + dt / 0.5)
-    const k = popT <= 0 ? 0.0001 : 0.2 + 0.8 * easeOutBack(popT) // grows out of the dust
+    popT = Math.min(1, popT + dt / 0.35)
+    const k = 0.6 + 0.4 * easeOutBack(popT) // quick pop-in
     const s = placed.scale.x + (userScale * k - placed.scale.x) * (popT < 1 ? 1 : 1 - Math.exp(-dt * 16))
     placed.scale.setScalar(Math.max(0.0001, s))
   }
 
-  dust.update(dt)
   if (mixer) mixer.update(dt)
 }
 
 // ------------------------------------------------------------------ XR8
 
+// Render resolution: 1.6x CSS pixels (sharp on phones, ~35% fewer pixels than 2x).
+// Drops to 1.25x automatically if the frame rate stays low.
+let renderScale = 1.6
 function sizeCanvas() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2)
+  const dpr = Math.min(window.devicePixelRatio || 1, renderScale)
   canvas.width = Math.round(innerWidth * dpr)
   canvas.height = Math.round(innerHeight * dpr)
 }
@@ -570,6 +473,8 @@ async function startAR() {
         renderer.resetState() // XR8 changes GL state behind three's cache every frame
         renderer.clearDepth()
         renderer.render(scene, camera)
+        countFrame()
+        if (captureRequested) takePhoto() // read the frame right after drawing it
       },
       onCanvasSizeChange: () => {
         if (renderer) renderer.setSize(canvas.width, canvas.height, false)
@@ -591,14 +496,68 @@ async function startAR() {
 }
 
 addEventListener('resize', sizeCanvas)
-setInterval(() => {                      // tracking-quality log for logcat (every 2 s)
-  if (state !== 'starting') log(`state=${state} tracking=${trackingStatus} travel=${travel.toFixed(2)}m cam.y=${camera.position.y.toFixed(2)}`)
+
+// ------------------------------------------------------------------ frame rate
+
+let frames = 0, fps = 0, lowFpsWindows = 0
+function countFrame() { frames++ }
+setInterval(() => {                      // every 2 s: FPS + tracking log (logcat tag RealityDropWebAR)
+  fps = frames / 2; frames = 0
+  if (state === 'starting') return
+  log(`fps=${fps.toFixed(0)} render=${canvas.width}x${canvas.height} state=${state} tracking=${trackingStatus} travel=${travel.toFixed(2)}m`)
+  // Three slow windows in a row (< 24 FPS): render fewer pixels
+  lowFpsWindows = fps > 0 && fps < 24 ? lowFpsWindows + 1 : 0
+  if (lowFpsWindows >= 3 && renderScale > 1.25) {
+    renderScale = 1.25
+    sizeCanvas()
+    log('Low FPS: render scale lowered to 1.25x')
+  }
 }, 2000)
+
+// ------------------------------------------------------------------ photo capture
+
+let captureRequested = false
+function requestPhoto() {
+  if (captureRequested || !renderer) return
+  captureRequested = true
+  if (params.has('preview')) takePhoto()
+}
+function takePhoto() {
+  captureRequested = false
+  let data
+  try { data = canvas.toDataURL('image/jpeg', 0.92) } catch (e) { log('Capture failed', e); toast("Couldn't take the photo"); return }
+  // Shutter flash + thumbnail (the HTML buttons are not part of the picture)
+  const flash = $('flash')
+  flash.classList.remove('go'); void flash.offsetWidth; flash.classList.add('go')
+  native?.haptic?.()
+  $('photoThumb').src = data
+  $('photoText').textContent = 'Saving…'
+  $('share').classList.add('hidden')
+  showPhotoCard()
+  const base64 = data.slice(data.indexOf(',') + 1)
+  if (native?.savePhoto) setTimeout(() => native.savePhoto(base64), 30) // let the flash start first
+  else window.rdPhotoSaved(false, false)
+}
+let photoTimer = 0
+function showPhotoCard() {
+  const card = $('photo')
+  card.classList.remove('hidden', 'out')
+  clearTimeout(photoTimer)
+  photoTimer = setTimeout(() => card.classList.add('out'), 4500)
+}
+window.rdPhotoSaved = (ok, canShare) => {
+  $('photoText').textContent = ok ? 'Saved to Gallery' : (native ? "Couldn't save the photo" : 'Preview only')
+  $('share').classList.toggle('hidden', !(ok && canShare))
+  showPhotoCard()
+}
+function toast(text) { hint(text, 2500) }
+$('shutter').onclick = requestPhoto
+$('share').onclick = () => native?.sharePhoto?.()
 
 /** Desktop check without camera/XR8 (?preview=1): fixed camera looking at the floor. */
 function startPreview() {
   sizeCanvas()
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true })
   renderer.setPixelRatio(1)
   renderer.setSize(canvas.width, canvas.height, false)
   renderer.outputColorSpace = THREE.SRGBColorSpace

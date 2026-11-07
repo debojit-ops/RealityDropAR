@@ -3,6 +3,14 @@ package com.realitydrop.webar;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.Dialog;
+import android.content.ContentResolver;
+import android.content.ContentValues;
+import android.content.Intent;
+import android.media.MediaScannerConnection;
+import android.os.Build;
+import android.os.Environment;
+import android.provider.MediaStore;
+import android.util.Base64;
 import android.graphics.Color;
 import android.net.Uri;
 import android.util.Log;
@@ -25,7 +33,12 @@ import android.webkit.WebViewClient;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -45,6 +58,7 @@ public class WebARView {
 
     private static WebView webView;
     private static Dialog dialog;
+    private static Uri lastPhoto;
     private static String modelPath;
     private static String unityObject;
 
@@ -69,6 +83,10 @@ public class WebARView {
             s.setAllowContentAccess(false);
             // Present as regular Chrome (drop the "; wv" WebView marker) so XR8 treats it as a supported browser
             s.setUserAgentString(s.getUserAgentString().replace("; wv)", ")"));
+
+            // Keep the AR page's renderer at top priority (smooth frame rate)
+            if (Build.VERSION.SDK_INT >= 26) wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+            wv.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
             wv.setWebChromeClient(new WebChromeClient() {
                 @Override
@@ -215,6 +233,62 @@ public class WebARView {
 
         @JavascriptInterface
         public void close() { WebARView.close(activity); }
+
+        /** Saves a JPEG (base64, no data: prefix) to the gallery (Pictures/RealityDrop). Calls rdPhotoSaved(ok). */
+        @JavascriptInterface
+        public void savePhoto(String base64) {
+            boolean ok = false;
+            try {
+                byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
+                String name = "RealityDrop_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".jpg";
+                if (Build.VERSION.SDK_INT >= 29) {
+                    ContentResolver cr = activity.getContentResolver();
+                    ContentValues v = new ContentValues();
+                    v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
+                    v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+                    v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/RealityDrop");
+                    v.put(MediaStore.Images.Media.IS_PENDING, 1);
+                    Uri uri = cr.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+                    if (uri != null) {
+                        try (OutputStream out = cr.openOutputStream(uri)) { out.write(bytes); }
+                        v.clear();
+                        v.put(MediaStore.Images.Media.IS_PENDING, 0);
+                        cr.update(uri, v, null, null);
+                        lastPhoto = uri;
+                        ok = true;
+                    }
+                } else {
+                    // Android 7–9 without storage permission: app pictures folder, indexed by the media scanner
+                    File dir = activity.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+                    File file = new File(dir, name);
+                    try (FileOutputStream out = new FileOutputStream(file)) { out.write(bytes); }
+                    MediaScannerConnection.scanFile(activity, new String[]{file.getAbsolutePath()}, new String[]{"image/jpeg"}, null);
+                    lastPhoto = null;
+                    ok = true;
+                }
+                Log.i(TAG, "Photo saved: " + name + " (" + bytes.length / 1024 + " KB)");
+            } catch (Exception e) {
+                Log.e(TAG, "Photo save failed: " + e);
+            }
+            final boolean saved = ok;
+            final boolean canShare = lastPhoto != null;
+            activity.runOnUiThread(() -> {
+                if (webView != null) webView.evaluateJavascript("window.rdPhotoSaved && rdPhotoSaved(" + saved + "," + canShare + ")", null);
+            });
+        }
+
+        /** Opens the Android share sheet for the last saved photo. */
+        @JavascriptInterface
+        public void sharePhoto() {
+            if (lastPhoto == null) return;
+            activity.runOnUiThread(() -> {
+                Intent send = new Intent(Intent.ACTION_SEND);
+                send.setType("image/jpeg");
+                send.putExtra(Intent.EXTRA_STREAM, lastPhoto);
+                send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                activity.startActivity(Intent.createChooser(send, "Share photo"));
+            });
+        }
 
         @JavascriptInterface
         public void haptic() {
