@@ -207,6 +207,7 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 - [ ] Photo resolution = render resolution (1.6x CSS px, about 660×1430 on a 1080p phone); a full-res capture would need a separate high-res render pass
 
 ### F. Stability, Security & Polish: ~30%
+- [ ] **NEXT: raise the AR camera-view FPS (XR8 WebAR)** — still not smooth enough on OnePlus CPH2717 after the 2026-11-08 revert. Start by reading the `fps=… render=…` logcat lines (tag `RealityDropWebAR`). Ideas to test one at a time: pause Unity fully under the WebView (not just cameras off at 10 FPS), lighter model rendering (no env map / simpler materials for heavy models), fewer draw calls (merge static meshes), XR8 camera config. Do NOT lower render resolution or add full-screen glow effects (both tried: pixelation / lag).
 - [x] 60 fps target (`AppPerformanceManager`)
 - [ ] **Move the hard-coded Sketchfab token** (`SketchfabAPIManager.DefaultToken`) out of source control; it's already committed, so **revoke it and issue a new one**
 - [ ] Profile memory on a real device for big models (earlier commits mention lag and crashes)
@@ -231,6 +232,7 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 ## 8. Change Log
 Add newest entries at the top: `YYYY-MM-DD — what changed — files`.
 
+- 2026-11-08 — Logged open task: AR camera-view FPS still needs improvement (§6 F) — `PROJECT_GUIDE.md`
 - 2026-11-08 — WebAR: reverted the big/distance-scaled indicator to the original ring (it lowered FPS on device); render back to 2x (the auto 1.25x drop made models pixelated); removed the WebView hardware layer (extra full-screen copy per frame). Photo capture kept — `webar/app.js`, `WebARView.java`
 - 2026-11-07 — WebAR: removed the pixel-dust effect (laggy); frame rate: render scale 1.6x (auto 1.25x if < 24 FPS for 6 s), WebView renderer priority IMPORTANT + hardware layer, FPS in the 2 s logcat line; photo capture (shutter, flash, save to Pictures/RealityDrop, share) — `webar/app.js`, `webar/index.html`, `webar/style.css`, `WebARView.java`
 - 2026-11-07 — WebAR: bigger glowing placement indicator (0.2 m radius, halo + rotating dashed arc) that scales with distance (0.55x–2.6x, ~1x at 1.5 m); PLACE MODEL plays a blue spiral pixel-dust burst (360 particles, 1.8 s) + ground shockwave and the model grows out of it; `?preview=1` desktop check mode — `webar/app.js`
