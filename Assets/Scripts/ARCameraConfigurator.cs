@@ -5,14 +5,16 @@ using UnityEngine.XR.ARSubsystems;
 
 /// <summary>
 /// Picks a light ARCore/ARKit camera configuration as soon as the camera starts:
-/// 30 fps and the resolution closest to 1280×720 (never a 60 fps / very high-res mode).
+/// 30 fps and the SMALLEST tracking image (~640×480, ARCore's default). The config resolution is the
+/// image ARCore analyses every frame — a 720p choice dropped tracking to ~7 fps on device.
 /// Heavier modes left ARCore processing only ~4 frames per second on device, so tracking
 /// never started and no surfaces were found. Added by ARSceneInitializer.
 /// </summary>
 public class ARCameraConfigurator : MonoBehaviour
 {
     public int preferredFramerate = 30;
-    public Vector2Int preferredResolution = new Vector2Int(1280, 720);
+    [Tooltip("ARCore analyses this image size for tracking every frame: smaller = much faster tracking. ARCore's own default is 640x480.")]
+    public Vector2Int preferredResolution = new Vector2Int(640, 480);
 
     private ARCameraManager cameraManager;
     private bool done;

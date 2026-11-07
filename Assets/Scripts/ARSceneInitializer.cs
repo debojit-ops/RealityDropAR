@@ -160,5 +160,6 @@ public class ARSceneInitializer : MonoBehaviour
         ARScreenUI.Ensure();
         ARLightEstimation.Ensure();
         ARCameraConfigurator.Ensure(); // light 30 fps camera mode so ARCore isn't starved
+        ARDiagnostics.Ensure();        // [ARDiag] logs + DIAGNOSIS line (+ on-screen panel in Development builds)
     }
 }
