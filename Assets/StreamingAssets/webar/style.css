@@ -1,0 +1,94 @@
+:root {
+  --neon: #3ef2ff;
+  --glass: rgba(10, 16, 24, 0.62);
+  --text: #eaf6ff;
+  --muted: #9fb2c4;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body {
+  margin: 0; height: 100%; overflow: hidden; background: #000; color: var(--text);
+  font-family: Inter, system-ui, -apple-system, Roboto, sans-serif;
+  user-select: none; -webkit-user-select: none; touch-action: none;
+}
+canvas#xr { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+#touch { position: fixed; inset: 0; }
+.hidden { display: none !important; }
+
+svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+
+.round {
+  width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--glass); color: var(--neon); border: 1.5px solid rgba(62, 242, 255, 0.55);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+}
+.round:active, .primary:active { transform: scale(0.94); }
+.pill {
+  background: var(--glass); border: 1.2px solid rgba(62, 242, 255, 0.35); border-radius: 999px;
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+}
+
+#top {
+  position: fixed; left: 0; right: 0; top: calc(var(--safe-top) + 14px);
+  display: flex; align-items: center; gap: 12px; padding: 0 16px;
+}
+#title {
+  flex: 1; min-width: 0; font-weight: 600; font-size: 16px; text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 6px rgba(0,0,0,.6);
+}
+#top .round.hidden { display: grid !important; visibility: hidden; }
+
+#hint {
+  position: fixed; left: 50%; top: calc(var(--safe-top) + 78px); transform: translateX(-50%);
+  padding: 10px 18px; font-size: 14px; font-weight: 500; white-space: nowrap; max-width: calc(100vw - 32px);
+  overflow: hidden; text-overflow: ellipsis; transition: opacity .35s;
+}
+#hint.fade { opacity: 0; }
+
+#bottom {
+  position: fixed; left: 0; right: 0; bottom: calc(var(--safe-bottom) + 14px);
+  display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 0 16px;
+}
+.primary {
+  min-width: 220px; height: 54px; border-radius: 999px; border: 1.5px solid var(--neon);
+  background: linear-gradient(180deg, rgba(62,242,255,.28), rgba(62,242,255,.10));
+  color: #fff; font-weight: 700; letter-spacing: .12em; font-size: 15px;
+  box-shadow: 0 0 22px rgba(62, 242, 255, .35);
+  transition: opacity .25s, transform .1s;
+}
+.primary:disabled { opacity: .35; box-shadow: none; }
+#size { padding: 6px 14px; font-size: 13px; color: var(--muted); }
+
+#anim { display: flex; gap: 8px; align-items: center; }
+#clipWrap { position: relative; height: 46px; display: flex; align-items: center; gap: 6px; padding: 0 14px 0 16px; }
+#clipName { max-width: 170px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; font-weight: 600; }
+#clips { position: absolute; inset: 0; opacity: 0; width: 100%; }
+#chev { width: 16px; height: 16px; color: var(--neon); }
+
+.credit {
+  background: none; border: 0; color: rgba(234, 246, 255, .55); font-size: 10px; padding: 2px 6px;
+}
+
+/* Placement ring is drawn in 3D; this element is only a fallback "scanning" pulse */
+#ring {
+  position: fixed; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px;
+  border-radius: 50%; border: 2px solid rgba(62, 242, 255, .7); pointer-events: none;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+#ring.hidden { display: none; }
+@keyframes pulse { 0%,100% { transform: scale(.75); opacity: .35 } 50% { transform: scale(1); opacity: .9 } }
+
+.sheet {
+  position: fixed; left: 16px; right: 16px; top: 50%; transform: translateY(-50%);
+  background: rgba(8, 12, 18, .94); border: 1.2px solid rgba(62, 242, 255, .45); border-radius: 22px;
+  padding: 22px; display: flex; flex-direction: column; gap: 14px; max-height: 80vh;
+}
+.sheet h2 { margin: 0; font-size: 18px; }
+.sheet p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; }
+.sheet pre { margin: 0; overflow: auto; white-space: pre-wrap; font-size: 10px; color: var(--muted); flex: 1; touch-action: pan-y; }
+.sheet .primary { align-self: center; }
+
+/* Bars only catch touches on their buttons; the rest goes to the gesture layer */
+#top, #bottom { pointer-events: none; }
+#top > *, #bottom > * { pointer-events: auto; }

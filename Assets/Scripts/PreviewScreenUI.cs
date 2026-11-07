@@ -425,6 +425,7 @@ public class PreviewScreenUI : MonoBehaviour
         // Fallback: same hand-off as PreviewUIManager
         string path = PlayerPrefs.GetString("LastModelPath", "");
         if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path)) return;
+        if (WebARLauncher.TryOpen(path, PlayerPrefs.GetString("LastModelTitle", "3D model"))) return; // xr8-webar
         if (ARModelBridge.Instance == null) new GameObject("ARModelBridge").AddComponent<ARModelBridge>();
         ARModelBridge.Instance.SetModel(manager != null ? manager.LoadedGltf : null, path);
         SceneManager.LoadScene("ARScene");

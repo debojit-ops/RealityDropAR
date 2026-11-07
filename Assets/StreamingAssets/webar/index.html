@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>RealityDrop AR</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    { "imports": { "three": "./lib/three.module.min.js" } }
+  </script>
+</head>
+<body>
+  <canvas id="xr"></canvas>
+  <div id="touch"></div>
+
+  <header id="top">
+    <button id="back" class="round" aria-label="Back">
+      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <div id="title">3D model</div>
+    <button id="reset" class="round hidden" aria-label="Place again">
+      <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.3-5.6"/><path d="M4 4v4h4"/></svg>
+    </button>
+  </header>
+
+  <div id="hint" class="pill">Starting camera…</div>
+
+  <footer id="bottom">
+    <div id="anim" class="hidden">
+      <button id="play" class="round" aria-label="Play or pause">
+        <svg id="pauseIcon" viewBox="0 0 24 24"><path d="M9 6v12M15 6v12"/></svg>
+        <svg id="playIcon" class="hidden" viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z"/></svg>
+      </button>
+      <div id="clipWrap" class="pill">
+        <span id="clipName">Animation</span>
+        <select id="clips" aria-label="Animation clip"></select>
+        <svg id="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+      </div>
+    </div>
+    <button id="place" class="primary" disabled>PLACE MODEL</button>
+    <div id="size" class="pill hidden">100%</div>
+    <button id="credit" class="credit">XR Engine © Niantic Spatial, Inc. · License</button>
+  </footer>
+
+  <div id="ring"></div>
+
+  <div id="error" class="sheet hidden">
+    <h2>AR couldn't start</h2>
+    <p id="errorText"></p>
+    <button id="errorBack" class="primary">BACK</button>
+  </div>
+
+  <div id="license" class="sheet hidden">
+    <h2>XR Engine License</h2>
+    <pre id="licenseText">Loading…</pre>
+    <button id="licenseClose" class="primary">CLOSE</button>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

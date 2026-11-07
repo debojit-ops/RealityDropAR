@@ -157,6 +157,9 @@ public class PreviewUIManager : MonoBehaviour
             return;
         }
 
+        // xr8-webar: on Android, AR runs in the 8th Wall XR8 WebView (falls through in the Editor)
+        if (WebARLauncher.TryOpen(path, PlayerPrefs.GetString("LastModelTitle", "3D model"))) return;
+
         // Ensure bridge exists in scene
         if (ARModelBridge.Instance == null)
         {
