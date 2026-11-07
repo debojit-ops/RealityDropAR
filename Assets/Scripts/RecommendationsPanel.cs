@@ -288,15 +288,41 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
 
     // ------------------------------------------------------------------ data
 
+    // ------------------------------------------------------------------ loading (cached, parallel, polite)
+
+    [System.Serializable] private class CachedSlide { public string uid, caption, title, author, image, query; }
+    [System.Serializable] private class SlideCache { public long savedAt; public string recentsKey; public List<CachedSlide> slides = new List<CachedSlide>(); }
+
+    const string CacheKey = "RecommendationsCacheV1";
+    const double CacheHours = 24;
+    const int ParallelFetches = 3;     // searches at once (was 1 after another)
+    const int ResultsPerQuery = 12;    // enough headroom for the content filter (was 24)
+    const int SlideImageWidth = 640;   // sharp on the card, ~1/3 the data of 1024 px
+
+    /// <summary>Background loading waits while a model downloads or search results are on screen.</summary>
+    private bool ShouldPause => NetworkPriority.BackgroundPaused ||
+                                (resultsContent != null && resultsContent.childCount > 0);
+
     private IEnumerator LoadRecommendations()
     {
         yield return null; // let the API manager read its token
 
-        var picks = new List<(string caption, string title, string query)>();
         var recents = LoadRecents();
-        for (int i = 0; i < recents.Count && i < MaxRecentPicks; i++)
-            picks.Add(("BECAUSE YOU SEARCHED", Capitalize(recents[i]), recents[i]));
+        var recentPicks = recents.GetRange(0, Mathf.Min(MaxRecentPicks, recents.Count));
+        string recentsKey = string.Join("|", recentPicks);
 
+        // 1) Saved recommendations from the last 24 h: slideshow appears instantly, no network
+        if (TryLoadCache(recentsKey, out var cached))
+        {
+            foreach (var c in cached.slides) ShowSlide(c);
+            loadingDone = true;
+            Debug.Log($"[Recommendations] {cached.slides.Count} slides from cache.");
+            yield break;
+        }
+
+        // 2) Otherwise fetch: recent searches first, then anime picks (3 searches in parallel)
+        var picks = new List<(string caption, string title, string query)>();
+        foreach (var r in recentPicks) picks.Add(("BECAUSE YOU SEARCHED", Capitalize(r), r));
         var extras = new List<int>();
         for (int i = AlwaysIncluded; i < AnimeCharacters.Length; i++) extras.Add(i);
         for (int i = extras.Count - 1; i > 0; i--) { int j = Random.Range(0, i + 1); (extras[i], extras[j]) = (extras[j], extras[i]); }
@@ -305,36 +331,86 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
         for (int i = 0; i < RotatingExtras && i < extras.Count; i++)
             picks.Add(("ANIME PICK", AnimeCharacters[extras[i]].label, AnimeCharacters[extras[i]].query));
 
-        foreach (var pick in picks)
-            yield return FetchTopModel(pick.caption, pick.title, pick.query);
+        var found = new CachedSlide[picks.Count];
+        int next = 0, running = 0;
+        float started = Time.realtimeSinceStartup;
+        while (next < picks.Count || running > 0)
+        {
+            while (ShouldPause) yield return null;
+            while (running < ParallelFetches && next < picks.Count)
+            {
+                int index = next++;
+                running++;
+                StartCoroutine(FetchTopModel(picks[index], slide =>
+                {
+                    found[index] = slide;
+                    if (slide != null) ShowSlide(slide);
+                }, () => running--));
+            }
+            yield return null;
+        }
+        Debug.Log($"[Recommendations] Fetched {picks.Count} picks in {Time.realtimeSinceStartup - started:0.0}s.");
+
+        // 3) Save in pick order for next time
+        var cache = new SlideCache { savedAt = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds(), recentsKey = recentsKey };
+        foreach (var s in found) if (s != null) cache.slides.Add(s);
+        if (cache.slides.Count > 0)
+        {
+            PlayerPrefs.SetString(CacheKey, JsonUtility.ToJson(cache));
+            PlayerPrefs.Save();
+        }
 
         loadingDone = true;
-        if (slides.Count == 0)
-        {
-            statusText.text = "Search above to find 3D models.";
-        }
+        if (slides.Count == 0) statusText.text = "Search above to find 3D models.";
     }
 
-    /// <summary>Best matching free, downloadable, family-safe model for a query → one slide.</summary>
-    private IEnumerator FetchTopModel(string caption, string title, string query)
+    private static bool TryLoadCache(string recentsKey, out SlideCache cache)
+    {
+        cache = null;
+        string json = PlayerPrefs.GetString(CacheKey, "");
+        if (string.IsNullOrEmpty(json)) return false;
+        try { cache = JsonUtility.FromJson<SlideCache>(json); } catch { return false; }
+        if (cache == null || cache.slides == null || cache.slides.Count == 0) return false;
+        double ageHours = (System.DateTimeOffset.UtcNow.ToUnixTimeSeconds() - cache.savedAt) / 3600.0;
+        // New searches since then: refresh so "Because you searched" stays current
+        return ageHours >= 0 && ageHours < CacheHours && cache.recentsKey == recentsKey;
+    }
+
+    private void ShowSlide(CachedSlide c)
+    {
+        if (c == null || slides.Exists(s => s.Uid == c.uid)) return;
+        usedUids.Add(c.uid);
+        var slide = AddSlide(c.uid, c.caption, c.title, c.title, c.author, c.image, c.query);
+        // Same polite loader as the results grid (max 4 at a time, pauses during downloads)
+        ThumbnailLoader.Load(c.image, slide.Image, null, tex => { slide.Texture = tex; slide.LastSize = Vector2.zero; });
+    }
+
+    /// <summary>Best matching free, downloadable, family-safe model for a query (one slide, or null).</summary>
+    private IEnumerator FetchTopModel((string caption, string title, string query) pick, System.Action<CachedSlide> onResult, System.Action onDone)
+    {
+        yield return FetchTopModelInner(pick, onResult);
+        onDone?.Invoke();
+    }
+
+    private IEnumerator FetchTopModelInner((string caption, string title, string query) pick, System.Action<CachedSlide> onResult)
     {
         // Default (relevance) order: sorting anime results by likes surfaces fan-service models.
-        // Ask for more than we need so the content filter can skip anything unsuitable.
-        string url = "https://api.sketchfab.com/v3/search?type=models&downloadable=true&count=24&q=" + UnityWebRequest.EscapeURL(query);
+        string url = $"https://api.sketchfab.com/v3/search?type=models&downloadable=true&count={ResultsPerQuery}&q=" + UnityWebRequest.EscapeURL(pick.query);
         string json = null;
         using (var req = UnityWebRequest.Get(url))
         {
             string token = api != null ? api.GetApiToken() : null;
             if (!string.IsNullOrEmpty(token)) req.SetRequestHeader("Authorization", "Token " + token);
+            req.timeout = 15;
             yield return req.SendWebRequest();
             if (req.result == UnityWebRequest.Result.Success) json = req.downloadHandler.text;
         }
-        if (json == null) yield break;
+        if (json == null) { onResult(null); yield break; }
 
         JArray results;
         try { results = (JArray)JObject.Parse(json)["results"]; }
-        catch { yield break; }
-        if (results == null) yield break;
+        catch { onResult(null); yield break; }
+        if (results == null) { onResult(null); yield break; }
 
         foreach (var model in results)
         {
@@ -342,34 +418,24 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
             if (string.IsNullOrEmpty(uid) || usedUids.Contains(uid)) continue;
             if (model.Value<bool?>("isDownloadable") == false) continue;
             if (!ContentFilter.IsSafe(model)) continue; // no adult / age-restricted models
-            var images = (JArray)model["thumbnails"]?["images"];
-            string img = PickImage(images, 1024);
+            string img = PickImage((JArray)model["thumbnails"]?["images"], SlideImageWidth);
             if (string.IsNullOrEmpty(img)) continue;
 
-            usedUids.Add(uid);
+            usedUids.Add(uid); // reserve now so parallel fetches never pick the same model
             string author = model["user"]?.Value<string>("displayName");
             if (string.IsNullOrWhiteSpace(author)) author = model["user"]?.Value<string>("username");
-            // Title = the model's real name (a "Naruto" search can return other characters);
-            // the caption says why it was recommended.
-            string modelName = model.Value<string>("name") ?? "3D model";
-            var slide = AddSlide(uid, (caption + " · " + title).ToUpperInvariant(), modelName, modelName, author, img, query);
-            StartCoroutine(LoadImage(slide, img));
+            onResult(new CachedSlide
+            {
+                uid = uid,
+                caption = (pick.caption + " · " + pick.title).ToUpperInvariant(),
+                title = model.Value<string>("name") ?? "3D model", // real model name; caption says why
+                author = author,
+                image = img,
+                query = pick.query
+            });
             yield break;
         }
-    }
-
-    private IEnumerator LoadImage(Slide s, string url)
-    {
-        using (var req = UnityWebRequestTexture.GetTexture(url))
-        {
-            yield return req.SendWebRequest();
-            if (req.result != UnityWebRequest.Result.Success) yield break;
-            var tex = DownloadHandlerTexture.GetContent(req);
-            if (this == null || s.Image == null) { Destroy(tex); yield break; }
-            s.Texture = tex;
-            s.Image.texture = tex;
-            s.LastSize = Vector2.zero; // force cover-crop
-        }
+        onResult(null);
     }
 
     // ------------------------------------------------------------------ navigation

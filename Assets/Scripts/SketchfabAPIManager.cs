@@ -113,7 +113,9 @@ public class SketchfabAPIManager : MonoBehaviour
         if (img != null)
         {
             if (entry.Thumbnail != null) img.texture = entry.Thumbnail;
-            else if (!string.IsNullOrEmpty(entry.ThumbnailUrl)) StartCoroutine(LoadThumbnail(entry.ThumbnailUrl, img, entry));
+            else if (!string.IsNullOrEmpty(entry.ThumbnailUrl))
+                // Visible cards first, max 4 at a time, paused during model downloads
+                ThumbnailLoader.Load(entry.ThumbnailUrl, img, ResultsViewport(), tex => entry.Thumbnail = tex);
         }
 
         var btn = card.GetComponent<Button>();
@@ -153,7 +155,8 @@ public class SketchfabAPIManager : MonoBehaviour
 
         currentQuery = query.Trim();
         nextPageUrl = null;
-        pagesLeftToAutoLoad = loadInfiniteNoLimit ? 9999 : autoLoadPages;
+        // Load ONE extra page up front (more arrive as the user scrolls) — 5 pages at once flooded the network
+        pagesLeftToAutoLoad = Mathf.Min(loadInfiniteNoLimit ? 9999 : autoLoadPages, MaxAutoLoadPages);
         shownThisSearch = 0;
         searchId++; // responses from older searches are ignored
         SearchSession.Begin(currentQuery);
@@ -168,7 +171,7 @@ public class SketchfabAPIManager : MonoBehaviour
     /// <summary>Called by Endless Scrolling (SearchUI) when scrolling near viewport bottom.</summary>
     public void FetchNextPage()
     {
-        if (isFetchingPage) return;
+        if (isFetchingPage || NetworkPriority.BackgroundPaused) return;
 
         if (string.IsNullOrEmpty(nextPageUrl))
         {
@@ -447,20 +450,37 @@ public class SketchfabAPIManager : MonoBehaviour
         var overlay = GetOrCreateOverlay();
         if (overlay != null) overlay.Show(title, author, thumbnail, CancelDownload);
 
+        // The download gets the connection to itself: thumbnails, extra pages and recommendations pause
+        NetworkPriority.PauseBackground();
+
         downloadToken++;
+        pendingHiResUrl = hiResThumbnailUrl; // loaded after the download link (link first)
         StartCoroutine(FetchDownloadLink(uid, downloadToken, title, author));
-        if (!string.IsNullOrEmpty(hiResThumbnailUrl))
-            StartCoroutine(LoadOverlayThumbnail(hiResThumbnailUrl, downloadToken));
     }
+
+    private string pendingHiResUrl;
+
+    private bool waitingForLink;
 
     /// <summary>Called by the overlay's Cancel button: aborts the download and returns to the list.</summary>
     private void CancelDownload()
     {
         downloadToken++; // makes the running download see itself as cancelled
+        NetworkPriority.ResumeBackground();
         isDownloading = false;
         if (busyCard != null) busyCard.SetBusy(false);
         busyCard = null;
         if (downloadOverlay != null) downloadOverlay.Hide();
+    }
+
+    private const int MaxAutoLoadPages = 1;
+
+    /// <summary>The visible area of the results list (used to load on-screen thumbnails first).</summary>
+    private RectTransform ResultsViewport()
+    {
+        var scroll = resultsParent != null ? resultsParent.GetComponentInParent<ScrollRect>() : null;
+        if (scroll == null) return null;
+        return scroll.viewport != null ? scroll.viewport : (RectTransform)scroll.transform;
     }
 
     private DownloadOverlay GetOrCreateOverlay()
@@ -481,19 +501,26 @@ public class SketchfabAPIManager : MonoBehaviour
         string url = $"https://api.sketchfab.com/v3/models/{uid}/download";
         string glbUrl = null;
 
+        float linkStart = Time.realtimeSinceStartup;
+        waitingForLink = true;
         using (UnityWebRequest request = UnityWebRequest.Get(url))
         {
             request.SetRequestHeader("Authorization", "Token " + apiToken);
+            request.timeout = 15; // never sit on "Preparing" forever
 
             yield return request.SendWebRequest();
+            waitingForLink = false;
             if (Cancelled()) yield break;
+            Debug.Log($"[Download] Link request took {Time.realtimeSinceStartup - linkStart:0.00}s (HTTP {request.responseCode}).");
 
             if (request.result != UnityWebRequest.Result.Success)
             {
                 Debug.LogError("[SketchfabAPIManager] Download link fetch failed (" + request.responseCode + "): " + request.error);
+                bool timedOut = request.error != null && request.error.ToLowerInvariant().Contains("timeout");
                 FailDownload(request.responseCode == 401 || request.responseCode == 403 || request.responseCode == 404
                     ? "This model isn't available for download. Please try another one."
-                    : "Couldn't reach Sketchfab. Check your internet connection and try again.");
+                    : timedOut ? "Sketchfab is taking too long to respond. Please try again."
+                               : "Couldn't reach Sketchfab. Check your internet connection and try again.");
                 yield break;
             }
 
@@ -515,9 +542,14 @@ public class SketchfabAPIManager : MonoBehaviour
             yield break;
         }
 
+        // Link is in hand: now fetch the sharper overlay picture (small) alongside the model file
+        if (!string.IsNullOrEmpty(pendingHiResUrl))
+            StartCoroutine(LoadOverlayThumbnail(pendingHiResUrl, token));
+
         string saveFolder = Path.Combine(Application.persistentDataPath, "Models");
         string resultPath = null;
         bool finished = false;
+        float fileStart = Time.realtimeSinceStartup;
 
         yield return ModelDownloader.DownloadAndExtractGLB(glbUrl, saveFolder,
             onComplete: glbPath => { resultPath = glbPath; finished = true; },
@@ -534,6 +566,7 @@ public class SketchfabAPIManager : MonoBehaviour
             });
 
         if (Cancelled() || !finished) yield break;
+        Debug.Log($"[Download] Model file + unzip took {Time.realtimeSinceStartup - fileStart:0.00}s ({lastDownloadBytes / 1048576f:0.0} MB).");
 
         if (string.IsNullOrEmpty(resultPath))
         {
@@ -565,6 +598,7 @@ public class SketchfabAPIManager : MonoBehaviour
 
     private void FailDownload(string userMessage)
     {
+        NetworkPriority.ResumeBackground();
         isDownloading = false;
         if (busyCard != null) busyCard.SetBusy(false);
         busyCard = null;

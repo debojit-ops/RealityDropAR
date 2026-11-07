@@ -45,6 +45,9 @@ public class ARDiagnostics : MonoBehaviour
     // Pose movement
     private Vector3 lastPos; private Quaternion lastRot;
     private float movedThisWindow, turnedThisWindow;
+    private int poseUpdatesThisWindow;
+    private float trackingHz;
+    private int poseJumpSeconds;
     private float totalPoseMotion;
 
     // State
@@ -128,6 +131,7 @@ public class ARDiagnostics : MonoBehaviour
         if (arCamera == null) arCamera = Camera.main;
         if (arCamera != null)
         {
+            if (arCamera.transform.position != lastPos || arCamera.transform.rotation != lastRot) poseUpdatesThisWindow++;
             movedThisWindow += Vector3.Distance(arCamera.transform.position, lastPos);
             turnedThisWindow += Quaternion.Angle(arCamera.transform.rotation, lastRot);
             lastPos = arCamera.transform.position;
@@ -148,6 +152,7 @@ public class ARDiagnostics : MonoBehaviour
     private void Tick()
     {
         framesPerSecond = framesThisWindow / window;
+        trackingHz = poseUpdatesThisWindow / window; // how often ARCore actually updates the phone pose (Google: "VIO frequency")
         renderFps = renderFramesThisWindow / window;
         totalPoseMotion += movedThisWindow;
 
@@ -159,15 +164,24 @@ public class ARDiagnostics : MonoBehaviour
             intrinsicsText = $"{k.resolution.x}x{k.resolution.y} f=({k.focalLength.x:0},{k.focalLength.y:0})";
 
         string line = $"t={sinceStart:0}s state={ARSession.state} reason={ARSession.notTrackingReason} " +
-                      $"camFPS={framesPerSecond:0.0} renderFPS={renderFps:0} tsBackwards={backwardsTimestamps} gaps>200ms={bigGaps} " +
+                      $"camFPS={framesPerSecond:0.0} trackHz={trackingHz:0.0}{(trackingHz < 15f && everTracked ? " (STARVED)" : "")} renderFPS={renderFps:0} tsBackwards={backwardsTimestamps} gaps>200ms={bigGaps} " +
                       $"poseMoved={movedThisWindow * 100f:0.0}cm turned={turnedThisWindow:0}° planes={planes} centreHit={centreHit} " +
                       $"brightness={(lastBrightness < 0 ? "n/a" : lastBrightness.ToString("0.00"))} cfg={CurrentConfigText()}";
         Debug.Log(Tag + line);
+        // A hand-held phone moves well under 2 m/s. Faster "movement" while tracking = ARCore's pose is jumping
+        // (unreliable visual-inertial tracking on this device / environment) → planes can't be confirmed.
+        if (ARSession.state == ARSessionState.SessionTracking && movedThisWindow / window > 2f)
+        {
+            poseJumpSeconds++;
+            Debug.LogWarning(Tag + $"POSE JUMP: ARCore reports {movedThisWindow / window:0.0} m/s of phone movement — tracking is unreliable " +
+                             $"({poseJumpSeconds}s so far). Plane detection and anchors will fail; use Manual mode.");
+        }
         UpdateOverlay();
 
         window = 0f;
         framesThisWindow = renderFramesThisWindow = backwardsTimestamps = bigGaps = 0;
         movedThisWindow = turnedThisWindow = 0f;
+        poseUpdatesThisWindow = 0;
     }
 
     private string CurrentConfigText()

@@ -123,6 +123,14 @@ public class PreviewScreenUI : MonoBehaviour
 
         BuildTopBar(root, title, author);
         BuildBadges(root, sizeText);
+
+        // Play / pause + clip picker for animated models (hidden when the model has no animation)
+        AnimationControls.Create(root, () => manager != null ? manager.LoadedModel : null, rt =>
+        {
+            rt.anchorMin = rt.anchorMax = new Vector2(0f, 1f);
+            rt.pivot = new Vector2(0f, 1f);
+            rt.anchoredPosition = new Vector2(16f * K, -150f * K);
+        }, listOpensUp: false);
         BuildHint(root);
         BuildDock(root);
         BuildLoading(root);

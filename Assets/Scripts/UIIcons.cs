@@ -9,7 +9,8 @@ using UnityEngine;
 public static class UIIcons
 {
     public const string Back = "back", Info = "info", Spin = "spin", Reset = "reset",
-                        Scene = "scene", Light = "light", ARCube = "arcube", Close = "close", Next = "next";
+                        Scene = "scene", Light = "light", ARCube = "arcube", Close = "close", Next = "next",
+                        Play = "play", Pause = "pause", ChevronDown = "chevrondown";
 
     private const int Size = 128;           // texture size (px)
     private const float Scale = Size / 24f; // grid → px
@@ -91,6 +92,15 @@ public static class UIIcons
                 break;
             case Next:
                 p.Add(new Line(9, 6, 15, 12)); p.Add(new Line(15, 12, 9, 18));
+                break;
+            case Play: // triangle outline
+                p.Add(new Line(8, 5, 19, 12)); p.Add(new Line(19, 12, 8, 19)); p.Add(new Line(8, 19, 8, 5));
+                break;
+            case Pause:
+                p.Add(new Line(9, 6, 9, 18)); p.Add(new Line(15, 6, 15, 18));
+                break;
+            case ChevronDown:
+                p.Add(new Line(6, 9, 12, 15)); p.Add(new Line(12, 15, 18, 9));
                 break;            case Info:
                 p.Add(new Circle(12, 12, 9)); p.Add(new Line(12, 11, 12, 17)); p.Add(new Circle(12, 7.6f, 1.1f, true));
                 break;

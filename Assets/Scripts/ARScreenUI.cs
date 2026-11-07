@@ -21,7 +21,8 @@ public class ARScreenUI : MonoBehaviour
     private ModelPlacement placement;
     private ARSceneInitializer initializer;
 
-    private CanvasGroup coachGroup, placeGroup, resetGroup, sizeGroup, liteGroup;
+    private CanvasGroup coachGroup, placeGroup, resetGroup, sizeGroup, liteGroup, modeGroup;
+    private TextMeshProUGUI modeLabel;
     private TextMeshProUGUI coachText, sizeText;
     private RawImage coachIcon;
     private string coachMessage;
@@ -102,6 +103,30 @@ public class ARScreenUI : MonoBehaviour
         UIKit.Stretch(sizeText.rectTransform, Vector2.zero, Vector2.zero);
         sizeText.characterSpacing = 4f;
 
+        // MANUAL ⇄ AR MODE switch (always available once the model is ready)
+        var mode = UIKit.Rect("ModeToggle", root);
+        mode.anchorMin = mode.anchorMax = new Vector2(0.5f, 1f);
+        mode.pivot = new Vector2(0.5f, 1f);
+        mode.anchoredPosition = new Vector2(0f, -150f * K);
+        UIKit.Surface(mode.gameObject, UIKit.GlassFill, 9999f, UIKit.WithAlpha(UIKit.Neon, 0.6f), 1.2f * K);
+        var modeLayout = mode.gameObject.AddComponent<HorizontalLayoutGroup>();
+        modeLayout.padding = new RectOffset((int)(18 * K), (int)(18 * K), (int)(8 * K), (int)(8 * K));
+        modeLayout.childAlignment = TextAnchor.MiddleCenter;
+        modeLayout.childControlWidth = modeLayout.childControlHeight = true;
+        modeLayout.childForceExpandWidth = modeLayout.childForceExpandHeight = false;
+        var modeFit = mode.gameObject.AddComponent<ContentSizeFitter>();
+        modeFit.horizontalFit = modeFit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+        modeLabel = UIKit.Text("Label", mode, UIFonts.Display, 17f * K, UIKit.Neon, TextAlignmentOptions.Center);
+        modeLabel.text = "MANUAL";
+        modeLabel.characterSpacing = 6f;
+        modeLabel.textWrappingMode = TextWrappingModes.NoWrap;
+        var modeBtn = mode.gameObject.AddComponent<Button>();
+        modeBtn.transition = Selectable.Transition.None;
+        modeBtn.onClick.AddListener(OnToggleMode);
+        UIPress.Add(mode);
+        modeGroup = mode.gameObject.AddComponent<CanvasGroup>();
+        modeGroup.alpha = 0f;
+
         // PLACE MODEL
         var place = UIKit.PrimaryButton(root, "PlaceModel", UIIcons.ARCube, "PLACE MODEL", OnPlace);
         var placeRt = (RectTransform)place.transform;
@@ -113,7 +138,7 @@ public class ARScreenUI : MonoBehaviour
         placeGroup.alpha = 0f;
 
         // USE CAMERA MODE (only when ARCore can't track on this phone)
-        var lite = UIKit.PrimaryButton(root, "LiteMode", UIIcons.ARCube, "USE CAMERA MODE", OnLiteMode);
+        var lite = UIKit.PrimaryButton(root, "LiteMode", UIIcons.ARCube, "PLACE MANUALLY", OnLiteMode);
         var liteRt = (RectTransform)lite.transform;
         liteRt.anchorMin = placeRt.anchorMin; liteRt.anchorMax = placeRt.anchorMax;
         liteRt.pivot = placeRt.pivot;
@@ -143,6 +168,14 @@ public class ARScreenUI : MonoBehaviour
         ile.preferredWidth = ile.preferredHeight = 20f * K;
         coachText = UIKit.Text("Text", coach, UIFonts.SemiBold, 15f * K, UIKit.TextMain, TextAlignmentOptions.Left);
         coachText.textWrappingMode = TextWrappingModes.NoWrap;
+
+        // Play / pause + clip picker for animated models, once the model is placed
+        AnimationControls.Create(root, () => placement != null ? placement.Model : null, rt =>
+        {
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0f);
+            rt.pivot = new Vector2(0.5f, 0f);
+            rt.anchoredPosition = new Vector2(0f, 40f * K);
+        }, listOpensUp: true, visible: () => placement != null && placement.IsPlaced);
 
         SafeAreaFitter.Apply(canvas, addBackdrop: false);
     }
@@ -174,6 +207,14 @@ public class ARScreenUI : MonoBehaviour
     // ------------------------------------------------------------------ actions
 
     private void OnBack() => SceneManager.LoadScene("PreviewScene_new");
+
+    /// <summary>MANUAL ⇄ AR: manual places the model in front of you and lets you move it freely.</summary>
+    private void OnToggleMode()
+    {
+        if (placement == null) return;
+        if (placement.LiteMode) { placement.ExitLiteMode(); placedTime = -1f; }
+        else OnLiteMode();
+    }
 
     private void OnLiteMode()
     {
@@ -218,13 +259,13 @@ public class ARScreenUI : MonoBehaviour
         else if (placement.LiteMode)
         {
             // Lite mode: explain the limits once, then get out of the way
-            message = "Camera mode: drag to move · pinch to resize · twist to rotate";
+            message = "Manual: drag to move · 2 fingers up/down to raise · pinch · twist";
             icon = UIIcons.Info;
             showCoach = !userInteracted && placedTime >= 0f && Time.unscaledTime - placedTime < 8f;
         }
         else if (placement.TrackingFailed)
         {
-            message = "AR tracking isn't working on this phone";
+            message = "AR can't find surfaces here: tap PLACE MANUALLY";
             icon = UIIcons.Info;
         }
         else if (placement.IsTrackingLost)
@@ -278,6 +319,8 @@ public class ARScreenUI : MonoBehaviour
 
         UIKit.Fade(placeGroup, !placement.LiteMode && state == ModelPlacement.PlacementState.Ready && !placement.IsTrackingLost, dt);
         UIKit.Fade(liteGroup, placement.TrackingFailed && !placement.LiteMode && modelReady, dt);
+        UIKit.Fade(modeGroup, modelReady && (initializer == null || !initializer.HasError), dt);
+        if (modeLabel != null) modeLabel.text = placement.LiteMode ? "AR MODE" : "MANUAL";
         UIKit.Fade(resetGroup, state == ModelPlacement.PlacementState.Placed, dt);
 
         bool pinching = placement.IsPinching;

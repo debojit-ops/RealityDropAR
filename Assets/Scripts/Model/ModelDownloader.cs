@@ -7,6 +7,9 @@ using UnityEngine.Networking;
 
 public static class ModelDownloader
 {
+    /// <summary>Abort if no bytes arrive for this long (connection stalled).</summary>
+    public const float StallTimeoutSeconds = 20f;
+
     /// <summary>
     /// Downloads a model (zip or glb), extracts if needed, and returns the .glb path (null on failure).
     /// onProgress(progress 0..1 or -1 if size unknown, bytesDownloaded, totalBytes or 0) is called every frame.
@@ -39,6 +42,8 @@ public static class ModelDownloader
             request.downloadHandler = new DownloadHandlerFile(localPath);
             var operation = request.SendWebRequest();
             ulong totalBytes = 0;
+            ulong lastBytes = 0;
+            float lastProgressTime = Time.realtimeSinceStartup;
 
             while (!operation.isDone)
             {
@@ -53,6 +58,17 @@ public static class ModelDownloader
                     ulong.TryParse(request.GetResponseHeader("Content-Length"), out totalBytes);
 
                 ulong downloaded = request.downloadedBytes;
+
+                // Stall guard: no new bytes for 20 s → give up with a clear error instead of hanging
+                if (downloaded != lastBytes) { lastBytes = downloaded; lastProgressTime = Time.realtimeSinceStartup; }
+                else if (Time.realtimeSinceStartup - lastProgressTime > StallTimeoutSeconds)
+                {
+                    request.Abort();
+                    Debug.LogError($"[ModelDownloader] Download stalled (no data for {StallTimeoutSeconds:0}s at {downloaded} bytes).");
+                    onComplete?.Invoke(null);
+                    yield break;
+                }
+
                 float progress = totalBytes > 0 ? Mathf.Clamp01((float)((double)downloaded / totalBytes)) : -1f;
                 onProgress?.Invoke(progress, downloaded, totalBytes);
                 yield return null;

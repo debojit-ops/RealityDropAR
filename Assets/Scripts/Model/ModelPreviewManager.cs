@@ -32,6 +32,8 @@ public class ModelPreviewManager : MonoBehaviour
 
     // Exposed so PreviewUIManager can pass it to ARModelBridge before scene switch
     public GltfImport LoadedGltf => loadedGltf;
+    /// <summary>The instantiated model (null until loaded). Used by the animation controls.</summary>
+    public GameObject LoadedModel => loadedModel;
     public string LoadedPath => loadedPath;
 
     private void Awake()

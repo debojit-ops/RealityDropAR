@@ -81,7 +81,43 @@ public class DownloadOverlay : MonoBehaviour
         visible = true;
     }
 
-    public void SetStage(string text) => stageText.text = text;
+    /// <summary>Stage text without trailing dots; the dots animate ". . ." in Update.</summary>
+    public void SetStage(string text)
+    {
+        stageBase = (text ?? string.Empty).TrimEnd('…', '.', ' ');
+        dotTimer = 0f;
+        dotCount = 0;
+        stageText.text = stageBase;
+    }
+
+    private string stageBase = string.Empty;
+    private float dotTimer;
+    private int dotCount;
+    private RectTransform spinner;
+
+    /// <summary>A 3/4 neon ring with a soft fading tail (drawn once, rotated every frame).</summary>
+    private static Texture2D spinnerTexture;
+    private static Texture2D SpinnerTexture()
+    {
+        if (spinnerTexture != null) return spinnerTexture;
+        const int n = 96;
+        var tex = new Texture2D(n, n, TextureFormat.RGBA32, false) { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear };
+        var px = new Color32[n * n];
+        float c = (n - 1) * 0.5f, outer = n * 0.46f, inner = n * 0.34f;
+        for (int y = 0; y < n; y++)
+        for (int x = 0; x < n; x++)
+        {
+            float dx = x - c, dy = y - c, r = Mathf.Sqrt(dx * dx + dy * dy);
+            float edge = Mathf.Clamp01(Mathf.Min(r - inner, outer - r) + 0.5f);   // anti-aliased ring
+            float ang = (Mathf.Atan2(dy, dx) / (2f * Mathf.PI) + 1f) % 1f;          // 0..1 around
+            float tail = Mathf.Clamp01((ang - 0.25f) / 0.75f);                      // gap, then fade in
+            byte a = (byte)(255f * edge * tail * tail);
+            px[y * n + x] = new Color32(255, 255, 255, a);
+        }
+        tex.SetPixels32(px);
+        tex.Apply();
+        return spinnerTexture = tex;
+    }
 
     /// <summary>Swaps in a sharper thumbnail once it has loaded. The overlay owns and destroys it.</summary>
     public void SetHiResThumbnail(Texture texture)
@@ -227,6 +263,16 @@ public class DownloadOverlay : MonoBehaviour
         rowLayout.childForceExpandWidth = false;
         rowLayout.childForceExpandHeight = false;
 
+        // Small rotating ring before the stage text
+        spinner = NewRect("Spinner", row);
+        var spinLE = spinner.gameObject.AddComponent<LayoutElement>();
+        spinLE.preferredWidth = spinLE.preferredHeight = spinLE.minWidth = spinLE.minHeight = 56f;
+        var spinImg = spinner.gameObject.AddComponent<RawImage>();
+        spinImg.texture = SpinnerTexture();
+        spinImg.color = NeonColor;
+        spinImg.raycastTarget = false;
+        rowLayout.spacing = 22f;
+
         stageText = NewText("Stage", row, UIFonts.SemiBold, 60f, TitleColor, FontStyles.Normal, TextAlignmentOptions.BottomLeft);
         stageText.gameObject.AddComponent<LayoutElement>().flexibleWidth = 1f;
         percentText = NewText("Percent", row, UIFonts.Display, 150f, NeonColor, FontStyles.Normal, TextAlignmentOptions.BottomRight);
@@ -343,6 +389,16 @@ public class DownloadOverlay : MonoBehaviour
         float width = track.rect.width;
         float height = track.rect.height;
         float now = Time.unscaledTime;
+
+        // Spinner turns clockwise; stage dots cycle "" → "." → ". ." → ". . ."
+        if (spinner != null) spinner.localRotation = Quaternion.Euler(0f, 0f, -now * 300f);
+        dotTimer += dt;
+        if (dotTimer >= 0.4f)
+        {
+            dotTimer = 0f;
+            dotCount = (dotCount + 1) % 4;
+            stageText.text = stageBase + (dotCount == 0 ? "" : " " + string.Join(" ", new string('.', dotCount).ToCharArray()));
+        }
 
         if (targetProgress >= 0f)
         {

@@ -66,6 +66,8 @@ public class ModelPlacement : MonoBehaviour
     /// <summary>Current size relative to the first placement (1 = 100%).</summary>
     public float ScaleFactor => userScale;
     public string ModelTitle { get; set; }
+    /// <summary>The model being placed (null until ready). Used by the animation controls.</summary>
+    public GameObject Model => model != null ? model : GetModel();
 
     public event System.Action OnPlaced;
     public event System.Action OnUserManipulated;
@@ -106,6 +108,7 @@ public class ModelPlacement : MonoBehaviour
     private bool touchStartedOnUI;
     private bool touchStartedOnModel;
     private float lastPinchDistance, lastTwistAngle;
+    private Vector2 lastTwoFingerMid;
 
     // Planes
     private bool planesVisible = true;
@@ -224,6 +227,12 @@ public class ModelPlacement : MonoBehaviour
     public bool liteLookAround = false;
 
     private float noTrackingTime;
+
+    [Header("Quick placement")]
+    [Tooltip("Allow placing on ARCore feature points before a plane is confirmed (model snaps to the floor later).")]
+    public bool allowFeaturePointPlacement = true;
+    private bool anchoredToPlane;
+    private float snapCheckTimer;
     private Quaternion liteYawOffset = Quaternion.identity;
     private float liteFloorY;
 
@@ -260,6 +269,23 @@ public class ModelPlacement : MonoBehaviour
         if (reticle != null) reticle.SetActive(false);
         PlaceInFrontLite();
         Debug.Log("[ModelPlacement] AR tracking unavailable — Lite mode enabled (gyro rotation, virtual floor).");
+    }
+
+    /// <summary>Leaves Manual mode: camera follows ARCore again, surfaces glow, user scans and places with PLACE MODEL.</summary>
+    public void ExitLiteMode()
+    {
+        if (!LiteMode) return;
+        LiteMode = false;
+        if (arCamera == null) arCamera = Camera.main;
+        if (arCamera != null)
+            foreach (var b in arCamera.GetComponents<Behaviour>())
+                if (b != null && b.GetType().Name == "TrackedPoseDriver") b.enabled = true;
+
+        noTrackingTime = 0f;     // give AR a fresh chance before offering manual again
+        TrackingFailed = false;
+        ARGlowPlane.Visible = true;
+        ResetPlacement();        // back to scanning
+        Debug.Log("[ModelPlacement] Manual mode off — back to AR placement.");
     }
 
     private void PlaceInFrontLite()
@@ -323,6 +349,7 @@ public class ModelPlacement : MonoBehaviour
         UpdateReticle(sessionTracking, dt);
         HandleInput();
         UpdatePlaneVisibility(dt);
+        SnapToPlaneWhenFound(dt);
 
         if (CurrentState == PlacementState.Initializing && GetModel() != null && stableTrackingTime > 0f)
             SetState(PlacementState.Scanning);
@@ -370,7 +397,7 @@ public class ModelPlacement : MonoBehaviour
         bool found = false;
 
         if (searching && sessionTracking && arCamera != null &&
-            TryRaycastSurface(new Vector2(Screen.width * 0.5f, Screen.height * 0.5f), out Pose pose, out ARPlane plane))
+            TryFindPlacement(new Vector2(Screen.width * 0.5f, Screen.height * 0.5f), out Pose pose, out ARPlane plane))
         {
             found = true;
             // Face the user: yaw towards the camera, flat on the surface
@@ -428,6 +455,54 @@ public class ModelPlacement : MonoBehaviour
                                                          : new Color(0.55f, 0.65f, 0.72f, 1f) * reticleVisible);
             reticleMaterial.SetFloat("_PlatformAlpha", (ready ? 0.35f : 0.1f) * reticleVisible);
         }
+    }
+
+    /// <summary>How the current placement spot was found (best → quickest).</summary>
+    public enum PlacementSource { None, Plane, ExtendedPlane, FeaturePoint }
+    public PlacementSource CurrentSource { get; private set; }
+
+    /// <summary>
+    /// Finds where the ring should sit, best source first:
+    ///  1. inside a confirmed horizontal plane (most accurate)
+    ///  2. on the infinite extension of an already-found horizontal plane (floors are flat, so the ring
+    ///     can roam the whole floor as soon as one patch is known)
+    ///  3. on ARCore feature points below eye level — lets the user place before any plane is confirmed
+    ///     (the model then snaps onto the real floor once ARCore finds it, see SnapToPlaneWhenFound)
+    /// </summary>
+    private bool TryFindPlacement(Vector2 screenPoint, out Pose pose, out ARPlane plane)
+    {
+        CurrentSource = PlacementSource.None;
+        if (TryRaycastSurface(screenPoint, out pose, out plane)) { CurrentSource = PlacementSource.Plane; return true; }
+
+        if (raycastManager != null && raycastManager.Raycast(screenPoint, hits, TrackableType.PlaneWithinInfinity))
+        {
+            foreach (var hit in hits)
+            {
+                var p = planeManager != null ? planeManager.GetPlane(hit.trackableId) : null;
+                if (p == null || p.alignment != PlaneAlignment.HorizontalUp || p.trackingState != TrackingState.Tracking) continue;
+                if (hit.distance > 6f) continue; // far grazing hits on an extended plane are unreliable
+                pose = hit.pose;
+                plane = p;
+                CurrentSource = PlacementSource.ExtendedPlane;
+                return true;
+            }
+        }
+
+        if (allowFeaturePointPlacement && arCamera != null &&
+            raycastManager != null && raycastManager.Raycast(screenPoint, hits, TrackableType.FeaturePoint))
+        {
+            foreach (var hit in hits)
+            {
+                // Only points clearly below the eyes (floor / table height), at a sensible distance
+                if (hit.pose.position.y > arCamera.transform.position.y - 0.25f) continue;
+                if (hit.distance < 0.3f || hit.distance > 4f) continue;
+                pose = new Pose(hit.pose.position, Quaternion.identity);
+                plane = null;
+                CurrentSource = PlacementSource.FeaturePoint;
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>Raycast against confirmed horizontal, upward-facing surfaces only.</summary>
@@ -564,6 +639,35 @@ public class ModelPlacement : MonoBehaviour
 
         anchor = created;
         anchorRotationAtCreation = anchor != null ? anchor.transform.rotation : Quaternion.identity;
+        anchoredToPlane = plane != null;
+        snapCheckTimer = 0.5f;
+    }
+
+    /// <summary>
+    /// Placed quickly on feature points (no plane yet)? As soon as ARCore confirms a horizontal plane
+    /// right under the model, re-anchor onto it so the model sits exactly on the real floor.
+    /// </summary>
+    private void SnapToPlaneWhenFound(float dt)
+    {
+        if (!IsPlaced || anchoredToPlane || dragging || modelRoot == null || raycastManager == null) return;
+        snapCheckTimer -= dt;
+        if (snapCheckTimer > 0f) return;
+        snapCheckTimer = 0.5f;
+
+        var ray = new Ray(modelRoot.position + Vector3.up * 0.5f, Vector3.down);
+        if (!raycastManager.Raycast(ray, hits, TrackableType.PlaneWithinInfinity)) return;
+        foreach (var hit in hits)
+        {
+            var p = planeManager != null ? planeManager.GetPlane(hit.trackableId) : null;
+            if (p == null || p.alignment != PlaneAlignment.HorizontalUp || p.trackingState != TrackingState.Tracking) continue;
+            if (Mathf.Abs(hit.pose.position.y - modelRoot.position.y) > 0.3f) continue; // a different surface
+            Vector3 onPlane = new Vector3(modelRoot.position.x, hit.pose.position.y, modelRoot.position.z);
+            CreateAnchor(onPlane, p);
+            followTarget = onPlane;
+            settled = false; // glide the small correction instead of popping
+            Debug.Log("[ModelPlacement] Model snapped onto the detected floor plane.");
+            return;
+        }
     }
 
     private void RemoveAnchor()
@@ -602,7 +706,8 @@ public class ModelPlacement : MonoBehaviour
                 touchStartPos = t.position;
                 touchStartTime = Time.unscaledTime;
                 touchStartedOnUI = IsOverUI(t.fingerId);
-                touchStartedOnModel = !touchStartedOnUI && IsPlaced && TouchHitsModel(t.position);
+                // Manual mode: a one-finger drag anywhere moves the model (easier than hitting it exactly)
+                touchStartedOnModel = !touchStartedOnUI && IsPlaced && (LiteMode || TouchHitsModel(t.position));
                 if (touchStartedOnModel) BeginDrag(t.position);
                 break;
             case TouchPhase.Moved:
@@ -628,7 +733,7 @@ public class ModelPlacement : MonoBehaviour
             touchStartPos = Input.mousePosition;
             touchStartTime = Time.unscaledTime;
             touchStartedOnUI = IsOverUI(-1);
-            touchStartedOnModel = !touchStartedOnUI && IsPlaced && TouchHitsModel(Input.mousePosition);
+            touchStartedOnModel = !touchStartedOnUI && IsPlaced && (LiteMode || TouchHitsModel(Input.mousePosition));
             if (touchStartedOnModel) BeginDrag(Input.mousePosition);
         }
         else if (Input.GetMouseButton(0) && dragging) UpdateDrag(Input.mousePosition);
@@ -722,10 +827,13 @@ public class ModelPlacement : MonoBehaviour
         float dist = Vector2.Distance(t0.position, t1.position);
         float angle = Mathf.Atan2(t1.position.y - t0.position.y, t1.position.x - t0.position.x) * Mathf.Rad2Deg;
 
+        Vector2 mid = (t0.position + t1.position) * 0.5f;
+
         if (t0.phase == TouchPhase.Began || t1.phase == TouchPhase.Began || lastPinchDistance <= 0f)
         {
             lastPinchDistance = dist;
             lastTwistAngle = angle;
+            lastTwoFingerMid = mid;
             IsPinching = true;
             return;
         }
@@ -734,8 +842,19 @@ public class ModelPlacement : MonoBehaviour
             userScale = Mathf.Clamp(userScale * dist / lastPinchDistance, userScaleLimits.x, userScaleLimits.y);
         userYaw -= Mathf.DeltaAngle(lastTwistAngle, angle) * rotationMultiplier;
 
+        // Manual mode: sliding two fingers up/down raises/lowers the model (free X/Y/Z placement)
+        if (LiteMode && arCamera != null && modelRoot != null)
+        {
+            float dy = mid.y - lastTwoFingerMid.y;
+            float distance = Mathf.Max(0.3f, Vector3.Distance(arCamera.transform.position, modelRoot.position));
+            float metersPerPixel = 2f * Mathf.Tan(arCamera.fieldOfView * 0.5f * Mathf.Deg2Rad) * distance / Mathf.Max(1f, Screen.height);
+            followTarget.y += dy * metersPerPixel;
+            settled = false;
+        }
+
         lastPinchDistance = dist;
         lastTwistAngle = angle;
+        lastTwoFingerMid = mid;
         IsPinching = true;
         OnUserManipulated?.Invoke();
     }
