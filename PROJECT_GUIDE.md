@@ -230,6 +230,7 @@ Scene names are hard-coded as strings in: `SketchfabAPIManager.cs` (→ `Preview
 ## 8. Change Log
 Add newest entries at the top: `YYYY-MM-DD — what changed — files`.
 
+- 2026-11-07 — WebAR: bigger glowing placement indicator (0.2 m radius, halo + rotating dashed arc) that scales with distance (0.55x–2.6x, ~1x at 1.5 m); PLACE MODEL plays a blue spiral pixel-dust burst (360 particles, 1.8 s) + ground shockwave and the model grows out of it; `?preview=1` desktop check mode — `webar/app.js`
 - 2026-11-07 — Merged xr8-webar into master: XR8 WebAR is now the Android AR path (tested working on OnePlus CPH2717); AR Foundation ARScene kept for the Editor — `PROJECT_GUIDE.md`
 - 2026-11-07 — (xr8-webar) Fix black camera feed: Unity's activity has hardwareAccelerated=false, so the WebView now lives in its own hardware-accelerated full-screen Dialog window; bundled Inter font — `WebARView.java`, `webar/style.css`, `webar/fonts`
 - 2026-11-07 — (branch xr8-webar) 8th Wall XR8 WebAR in an Android WebView — `StreamingAssets/webar/*` (new), `Plugins/Android/WebARView.java` (new), `WebARLauncher.cs` (new), `PreviewUIManager.cs`, `PreviewScreenUI.cs`
