@@ -121,8 +121,26 @@ public class ARSceneInitializer : MonoBehaviour
         modelLoader.SetLastLoadedModel(model);
         model.SetActive(false);
         IsModelReady = true;
+        StartCoroutine(RestartTrackingAfterLoad());
         SetStatus("Point at a surface and tap Spawn.");
         Debug.Log("[ARSceneInitializer] Model ready for AR placement.");
+    }
+
+    /// <summary>
+    /// Loading the model blocks the main thread for a few seconds while the AR session is already
+    /// starting; ARCore drops its tracking initialization during that freeze ("Frame gap > 400ms")
+    /// and can stay in NotTracking. Once the model is ready, restart the session so tracking starts clean.
+    /// </summary>
+    private IEnumerator RestartTrackingAfterLoad()
+    {
+        yield return null;
+        yield return null; // let the frame after the heavy load settle
+        var session = FindFirstObjectByType<ARSession>();
+        if (session != null)
+        {
+            Debug.Log("[ARSceneInitializer] Model ready — restarting AR tracking for a clean start.");
+            session.Reset();
+        }
     }
 
     public string LastStatus { get; private set; }
@@ -141,5 +159,6 @@ public class ARSceneInitializer : MonoBehaviour
         // New AR screen (coaching, PLACE button, gestures HUD) + real-world light matching
         ARScreenUI.Ensure();
         ARLightEstimation.Ensure();
+        ARCameraConfigurator.Ensure(); // light 30 fps camera mode so ARCore isn't starved
     }
 }

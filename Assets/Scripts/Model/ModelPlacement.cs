@@ -194,9 +194,100 @@ public class ModelPlacement : MonoBehaviour
     {
         RemoveAnchor();
         dragging = false;
-        if (modelRoot != null) modelRoot.gameObject.SetActive(false);
         userScale = 1f;
+        if (LiteMode)
+        {
+            // Lite mode has no surfaces to scan: put the model back in front of the user
+            if (modelRoot != null) modelRoot.gameObject.SetActive(false);
+            PlaceInFrontLite();
+            return;
+        }
+        if (modelRoot != null) modelRoot.gameObject.SetActive(false);
         SetState(PlacementState.Scanning);
+    }
+
+    // ------------------------------------------------------------------ Lite mode (no ARCore tracking)
+
+    /// <summary>True when ARCore could not start tracking on this phone (offer Lite mode).</summary>
+    public bool TrackingFailed { get; private set; }
+    /// <summary>Lite mode: model shown over the live camera, phone rotation from the gyroscope, no world tracking.</summary>
+    public bool LiteMode { get; private set; }
+
+    [Header("Lite mode (fallback when AR tracking fails)")]
+    [Tooltip("Seconds without any AR tracking (after the model is ready) before Lite mode is offered.")]
+    public float trackingFailTimeout = 12f;
+    [Tooltip("Assumed camera height above the floor in Lite mode (meters).")]
+    public float liteEyeHeight = 1.3f;
+    [Tooltip("Distance of the model in front of the user in Lite mode (meters).")]
+    public float liteDistance = 1.5f;
+    [Tooltip("Rotate the view with the gyroscope in Lite mode. Off = model stays steady on screen (no drift).")]
+    public bool liteLookAround = false;
+
+    private float noTrackingTime;
+    private Quaternion liteYawOffset = Quaternion.identity;
+    private float liteFloorY;
+
+    /// <summary>
+    /// Switches to Lite mode: stops following ARCore's (broken) camera pose, rotates the camera with the
+    /// gyroscope instead, hides surface visuals and places the model on a virtual floor in front of the user.
+    /// Drag / pinch / twist keep working; walking around the model does not (no position tracking).
+    /// </summary>
+    public void EnterLiteMode()
+    {
+        if (LiteMode || GetModel() == null) return;
+        LiteMode = true;
+        if (arCamera == null) arCamera = Camera.main;
+
+        // ARCore's pose driver keeps feeding a broken pose — turn it off and drive rotation ourselves
+        if (arCamera != null)
+            foreach (var b in arCamera.GetComponents<Behaviour>())
+                if (b != null && b.GetType().Name == "TrackedPoseDriver") b.enabled = false;
+
+        Input.gyro.enabled = true;
+        if (arCamera != null)
+        {
+            // Keep the current heading: align the gyro's yaw to where the camera is looking now
+            float camYaw = arCamera.transform.eulerAngles.y;
+            float gyroYaw = SystemInfo.supportsGyroscope ? GyroRotation().eulerAngles.y : camYaw;
+            liteYawOffset = Quaternion.Euler(0f, camYaw - gyroYaw, 0f);
+            liteFloorY = arCamera.transform.position.y - liteEyeHeight;
+            // Level view looking slightly down at the virtual floor, so the model sits in the lower middle
+            arCamera.transform.rotation = Quaternion.Euler(30f, camYaw, 0f);
+        }
+
+        RemoveAnchor();
+        ARGlowPlane.Visible = false;
+        if (reticle != null) reticle.SetActive(false);
+        PlaceInFrontLite();
+        Debug.Log("[ModelPlacement] AR tracking unavailable — Lite mode enabled (gyro rotation, virtual floor).");
+    }
+
+    private void PlaceInFrontLite()
+    {
+        if (arCamera == null) return;
+        Vector3 fwd = arCamera.transform.forward;
+        fwd.y = 0f;
+        if (fwd.sqrMagnitude < 1e-4f) fwd = Vector3.forward;
+        fwd.Normalize();
+        Vector3 pos = arCamera.transform.position + fwd * liteDistance;
+        pos.y = liteFloorY;
+        PlaceAt(new Pose(pos, Quaternion.identity), null);
+    }
+
+    /// <summary>Phone orientation from the gyroscope, converted to Unity's coordinate system (portrait).</summary>
+    private static Quaternion GyroRotation()
+    {
+        Quaternion q = Input.gyro.attitude;
+        return Quaternion.Euler(90f, 0f, 0f) * new Quaternion(q.x, q.y, -q.z, -q.w);
+    }
+
+    private void UpdateLiteCamera(float dt)
+    {
+        // Default: camera stays still, so the model is steady on screen (no drift). Gyro look-around is
+        // optional: without position tracking it drifts when the user moves, so it is off by default.
+        if (!liteLookAround || arCamera == null || !SystemInfo.supportsGyroscope) return;
+        Quaternion target = liteYawOffset * GyroRotation();
+        arCamera.transform.rotation = Quaternion.Slerp(arCamera.transform.rotation, target, 1f - Mathf.Exp(-20f * dt));
     }
 
     // ------------------------------------------------------------------ frame loop
@@ -206,6 +297,14 @@ public class ModelPlacement : MonoBehaviour
         if (arCamera == null) arCamera = Camera.main;
         float dt = Time.deltaTime;
 
+        if (LiteMode)
+        {
+            IsTrackingLost = false;
+            UpdateLiteCamera(dt);
+            HandleInput();
+            return;
+        }
+
         bool sessionTracking = ARSession.state == ARSessionState.SessionTracking &&
                                ARSession.notTrackingReason == NotTrackingReason.None;
         stableTrackingTime = sessionTracking ? stableTrackingTime + dt : 0f;
@@ -214,6 +313,12 @@ public class ModelPlacement : MonoBehaviour
         // Placed: the model freezes while lost. Before placing: only "lost" after tracking had started.
         IsTrackingLost = CurrentState == PlacementState.Placed ? (!sessionTracking || !anchorOk)
                                                                : (hadTracking && !sessionTracking);
+
+        // Never tracked at all (phone not supported / not calibrated): offer Lite mode
+        bool modelReady = GetModel() != null;
+        if (!hadTracking && modelReady) noTrackingTime += dt;
+        TrackingFailed = !hadTracking && (ARSession.state == ARSessionState.Unsupported ||
+                                          (modelReady && noTrackingTime >= trackingFailTimeout));
 
         UpdateReticle(sessionTracking, dt);
         HandleInput();
@@ -229,7 +334,7 @@ public class ModelPlacement : MonoBehaviour
         float dt = Time.deltaTime;
 
         // Where the model should be: the drag point, or its anchor (frozen while tracking is lost)
-        if (!dragging && anchor != null && !IsTrackingLost)
+        if (!LiteMode && !dragging && anchor != null && !IsTrackingLost)
         {
             followTarget = anchor.transform.position;
         }
@@ -373,7 +478,7 @@ public class ModelPlacement : MonoBehaviour
             appear = 0f;
         }
 
-        CreateAnchor(pose.position, plane);
+        if (!LiteMode) CreateAnchor(pose.position, plane); // Lite mode: nothing to anchor to
         followTarget = pose.position;
         settled = false;
         SetState(PlacementState.Placed);
@@ -543,6 +648,17 @@ public class ModelPlacement : MonoBehaviour
         // so a stray tap never drops the model somewhere unexpected.
         if (IsPlaced && !touchStartedOnModel)
         {
+            // Lite mode: no real surfaces — glide along the virtual floor instead
+            if (LiteMode)
+            {
+                if (ScreenToFloor(position, out Vector3 floorPoint))
+                {
+                    followTarget = floorPoint;
+                    settled = false;
+                    OnUserManipulated?.Invoke();
+                }
+                return;
+            }
             // Tap another spot on the floor: glide the model there
             if (TryRaycastSurface(position, out Pose pose, out ARPlane plane))
             {
@@ -571,6 +687,7 @@ public class ModelPlacement : MonoBehaviour
     {
         dragging = false;
         if (modelRoot == null) return;
+        if (LiteMode) { settled = false; return; } // no anchors without tracking
         // One anchor at the final spot (attach to the surface under it when possible)
         Vector2 screen = arCamera != null ? (Vector2)arCamera.WorldToScreenPoint(followTarget) : Vector2.zero;
         ARPlane plane = null;

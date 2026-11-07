@@ -2,6 +2,8 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using TMPro;
+using UnityEngine.XR.ARFoundation;
+using UnityEngine.XR.ARSubsystems;
 
 /// <summary>
 /// AR screen HUD in the app's neon glass style (replaces the old AR canvas and debug buttons):
@@ -19,7 +21,7 @@ public class ARScreenUI : MonoBehaviour
     private ModelPlacement placement;
     private ARSceneInitializer initializer;
 
-    private CanvasGroup coachGroup, placeGroup, resetGroup, sizeGroup;
+    private CanvasGroup coachGroup, placeGroup, resetGroup, sizeGroup, liteGroup;
     private TextMeshProUGUI coachText, sizeText;
     private RawImage coachIcon;
     private string coachMessage;
@@ -110,6 +112,15 @@ public class ARScreenUI : MonoBehaviour
         placeGroup = placeRt.gameObject.AddComponent<CanvasGroup>();
         placeGroup.alpha = 0f;
 
+        // USE CAMERA MODE (only when ARCore can't track on this phone)
+        var lite = UIKit.PrimaryButton(root, "LiteMode", UIIcons.ARCube, "USE CAMERA MODE", OnLiteMode);
+        var liteRt = (RectTransform)lite.transform;
+        liteRt.anchorMin = placeRt.anchorMin; liteRt.anchorMax = placeRt.anchorMax;
+        liteRt.pivot = placeRt.pivot;
+        liteRt.offsetMin = placeRt.offsetMin; liteRt.offsetMax = placeRt.offsetMax;
+        liteGroup = liteRt.gameObject.AddComponent<CanvasGroup>();
+        liteGroup.alpha = 0f;
+
         // Coaching pill
         var coach = UIKit.Rect("Coach", root);
         coach.anchorMin = coach.anchorMax = new Vector2(0.5f, 0f);
@@ -136,6 +147,24 @@ public class ARScreenUI : MonoBehaviour
         SafeAreaFitter.Apply(canvas, addBackdrop: false);
     }
 
+
+    /// <summary>Why AR isn't tracking yet, in plain words (null when there is nothing specific to say).</summary>
+    private static string TrackingHint()
+    {
+        if (ARSession.state == ARSessionState.Unsupported)
+            return "This phone doesn't support AR";
+        if (ARSession.state == ARSessionState.NeedsInstall || ARSession.state == ARSessionState.Installing)
+            return "Installing Google Play Services for AR…";
+        switch (ARSession.notTrackingReason)
+        {
+            case NotTrackingReason.InsufficientLight: return "Too dark: turn on a light";
+            case NotTrackingReason.InsufficientFeatures: return "Point at a floor with some texture (a rug or wood)";
+            case NotTrackingReason.ExcessiveMotion: return "Move your phone more slowly";
+            case NotTrackingReason.CameraUnavailable: return "Camera unavailable: close other camera apps";
+            case NotTrackingReason.Unsupported: return "AR tracking isn't supported on this phone";
+            default: return null;
+        }
+    }
     private static void Place(RectTransform rt, Vector2 anchor, Vector2 pos)
     {
         rt.anchorMin = rt.anchorMax = anchor;
@@ -145,6 +174,14 @@ public class ARScreenUI : MonoBehaviour
     // ------------------------------------------------------------------ actions
 
     private void OnBack() => SceneManager.LoadScene("PreviewScene_new");
+
+    private void OnLiteMode()
+    {
+        if (placement == null) return;
+        placement.EnterLiteMode();
+        placedTime = Time.unscaledTime;
+        userInteracted = false;
+    }
 
     private void OnPlace()
     {
@@ -178,6 +215,18 @@ public class ARScreenUI : MonoBehaviour
         }
         else if (!modelReady)
             message = "Preparing your model…";
+        else if (placement.LiteMode)
+        {
+            // Lite mode: explain the limits once, then get out of the way
+            message = "Camera mode: drag to move · pinch to resize · twist to rotate";
+            icon = UIIcons.Info;
+            showCoach = !userInteracted && placedTime >= 0f && Time.unscaledTime - placedTime < 8f;
+        }
+        else if (placement.TrackingFailed)
+        {
+            message = "AR tracking isn't working on this phone";
+            icon = UIIcons.Info;
+        }
         else if (placement.IsTrackingLost)
         {
             message = state == ModelPlacement.PlacementState.Placed
@@ -188,7 +237,7 @@ public class ARScreenUI : MonoBehaviour
         else switch (state)
         {
             case ModelPlacement.PlacementState.Initializing:
-                message = "Move your phone slowly to start AR";
+                message = TrackingHint() ?? "Move your phone slowly to start AR";
                 break;
             case ModelPlacement.PlacementState.Scanning:
                 message = "Move your phone slowly over a floor or table";
@@ -227,7 +276,8 @@ public class ARScreenUI : MonoBehaviour
             ? Quaternion.Euler(0f, 0f, -Time.unscaledTime * 120f)
             : Quaternion.identity;
 
-        UIKit.Fade(placeGroup, state == ModelPlacement.PlacementState.Ready && !placement.IsTrackingLost, dt);
+        UIKit.Fade(placeGroup, !placement.LiteMode && state == ModelPlacement.PlacementState.Ready && !placement.IsTrackingLost, dt);
+        UIKit.Fade(liteGroup, placement.TrackingFailed && !placement.LiteMode && modelReady, dt);
         UIKit.Fade(resetGroup, state == ModelPlacement.PlacementState.Placed, dt);
 
         bool pinching = placement.IsPinching;

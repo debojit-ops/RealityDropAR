@@ -52,10 +52,9 @@ public class ARLightEstimation : MonoBehaviour
     {
         cameraManager = FindFirstObjectByType<ARCameraManager>();
         if (cameraManager == null) return;
-        cameraManager.requestedLightEstimation =
-            LightEstimation.AmbientIntensity | LightEstimation.AmbientColor |
-            LightEstimation.MainLightDirection | LightEstimation.MainLightIntensity |
-            LightEstimation.AmbientSphericalHarmonics;
+        // Ambient brightness + color only. The HDR modes (main light direction, spherical harmonics)
+        // make ARCore run extra image processing every frame, which starved tracking on device.
+        cameraManager.requestedLightEstimation = LightEstimation.AmbientIntensity | LightEstimation.AmbientColor;
         cameraManager.frameReceived += OnFrame;
     }
 
