@@ -100,7 +100,34 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 button, select { font-family: inherit; }
 
 /* Photo capture */
-#shutterRow { display: flex; justify-content: center; }
+#shutterRow { display: flex; justify-content: center; align-items: center; gap: 22px; }
+
+/* Joystick + height buttons. No backdrop-filter here: blurring the live camera every frame costs FPS. */
+#stick {
+  position: relative; width: 116px; height: 116px; border-radius: 50%; flex: none;
+  background: radial-gradient(circle, rgba(62,242,255,.10) 0%, rgba(10,16,24,.55) 70%);
+  border: 1.5px solid rgba(62, 242, 255, .55); box-shadow: 0 0 16px rgba(62, 242, 255, .22);
+  touch-action: none;
+}
+#stick .arrows { position: absolute; inset: 0; width: 100%; height: 100%; color: rgba(62,242,255,.6); stroke-width: 3; }
+#knob {
+  position: absolute; left: 50%; top: 50%; width: 50px; height: 50px; margin: -25px 0 0 -25px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #c9fbff, #3ef2ff 45%, #128fb8);
+  box-shadow: 0 0 18px rgba(62, 242, 255, .65), inset 0 -3px 6px rgba(0,0,0,.25);
+  pointer-events: none; transition: transform .18s ease-out; will-change: transform;
+}
+#stick.active #knob { transition: none; }
+#lift {
+  width: 52px; height: 116px; flex: none; border-radius: 26px; display: flex; flex-direction: column;
+  align-items: center; justify-content: space-between; padding: 4px 0;
+  background: rgba(10, 16, 24, .55); border: 1.5px solid rgba(62, 242, 255, .55);
+}
+#lift button {
+  width: 44px; height: 44px; border-radius: 50%; border: 0; display: grid; place-items: center;
+  background: rgba(62, 242, 255, .12); color: var(--neon); touch-action: none;
+}
+#lift button.held { background: rgba(62, 242, 255, .38); color: #fff; }
+#lift span { font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: .1em; }
 #shutter {
   width: 74px; height: 74px; border-radius: 50%; padding: 0; display: grid; place-items: center;
   background: rgba(10, 16, 24, .35); border: 4px solid #fff; box-shadow: 0 0 18px rgba(62, 242, 255, .45);
@@ -111,7 +138,7 @@ button, select { font-family: inherit; }
 #flash.go { animation: flash .45s ease-out; }
 @keyframes flash { 0% { opacity: .85 } 100% { opacity: 0 } }
 #photo {
-  position: fixed; left: 16px; bottom: calc(var(--safe-bottom) + 190px);
+  position: fixed; left: 16px; top: calc(var(--safe-top) + 130px); /* clear of the joystick row */
   display: flex; align-items: center; gap: 12px; padding: 6px 8px 6px 6px; border-radius: 18px;
   transition: opacity .35s, transform .35s;
 }

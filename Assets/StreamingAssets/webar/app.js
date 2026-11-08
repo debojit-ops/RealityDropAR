@@ -18,6 +18,10 @@ const TUNE = {
   groundSmoothing: 0.12, groundSnap: 0.35,
   targetSize: 0.6,      // largest model dimension on first placement (metres)
   minScale: 0.1, maxScale: 10,
+  stickSpeed: 0.6,      // joystick: metres/second per metre of camera distance (clamped below)
+  stickMin: 0.3, stickMax: 2.0,
+  liftSpeed: 0.45,      // height buttons: metres/second
+  maxHeight: 3,         // highest the model can be raised above the floor (metres)
 }
 
 const $ = id => document.getElementById(id)
@@ -231,7 +235,8 @@ function setState(next) {
   if (next === 'scanning') hint('Move your phone slowly to scan the floor')
   else if (next === 'aim') hint('Point your phone at the floor')
   else if (next === 'ready') hint('Tap PLACE MODEL')
-  else if (next === 'placed') hint('Drag to move · Pinch to resize · Twist to rotate', 4000)
+  else if (next === 'placed') hint('Joystick to move · ▲▼ height · Pinch / twist', 4500)
+  if (next !== 'placed') releaseControls()
   refreshPlaceButton()
 }
 
@@ -286,7 +291,10 @@ function placeModel() {
 $('place').onclick = placeModel
 $('reset').onclick = () => { setState(trackingOk ? 'aim' : 'scanning') }
 
-function updateSizeLabel() { $('size').textContent = `${Math.round(userScale * 100)}%` }
+function updateSizeLabel() {
+  const h = targetPos.y
+  $('size').textContent = `${Math.round(userScale * 100)}%` + (h > 0.01 ? ` · ${h < 1 ? Math.round(h * 100) + ' cm' : h.toFixed(2) + ' m'} up` : '')
+}
 
 // ------------------------------------------------------------------ gestures
 
@@ -297,7 +305,7 @@ const angle = (a, b) => Math.atan2(b.clientY - a.clientY, b.clientX - a.clientX)
 
 touchEl.addEventListener('touchstart', e => {
   e.preventDefault()
-  const t = e.touches
+  const t = e.targetTouches
   if (t.length === 1) gesture = { kind: 'one', x: t[0].clientX, y: t[0].clientY, moved: false, last: screenToGround(t[0].clientX, t[0].clientY) }
   else if (t.length >= 2) gesture = { kind: 'two', d: dist(t[0], t[1]), a: angle(t[0], t[1]), scale: userScale, yaw: targetYaw }
 }, { passive: false })
@@ -305,11 +313,11 @@ touchEl.addEventListener('touchstart', e => {
 touchEl.addEventListener('touchmove', e => {
   e.preventDefault()
   if (!gesture || state !== 'placed') return
-  const t = e.touches
+  const t = e.targetTouches
   if (gesture.kind === 'one' && t.length === 1) {
     if (Math.hypot(t[0].clientX - gesture.x, t[0].clientY - gesture.y) > 8) gesture.moved = true
     const hit = screenToGround(t[0].clientX, t[0].clientY)
-    if (hit && gesture.last) targetPos.add(hit.clone().sub(gesture.last)).setY(0)
+    if (hit && gesture.last) targetPos.add(hit.clone().sub(gesture.last).setY(0)) // keeps the chosen height
     if (hit) gesture.last = hit
   } else if (gesture.kind === 'two' && t.length >= 2) {
     userScale = THREE.MathUtils.clamp(gesture.scale * dist(t[0], t[1]) / Math.max(1, gesture.d), TUNE.minScale, TUNE.maxScale)
@@ -320,10 +328,78 @@ touchEl.addEventListener('touchmove', e => {
 
 touchEl.addEventListener('touchend', e => {
   e.preventDefault()
-  if (gesture?.kind === 'one' && !gesture.moved && e.touches.length === 0 && state === 'ready') placeModel() // tap to place
-  if (e.touches.length === 0) gesture = null
-  else if (e.touches.length === 1) gesture = { kind: 'one', x: e.touches[0].clientX, y: e.touches[0].clientY, moved: true, last: screenToGround(e.touches[0].clientX, e.touches[0].clientY) }
+  const t = e.targetTouches
+  if (gesture?.kind === 'one' && !gesture.moved && t.length === 0 && state === 'ready') placeModel() // tap to place
+  if (t.length === 0) gesture = null
+  else if (t.length === 1) gesture = { kind: 'one', x: t[0].clientX, y: t[0].clientY, moved: true, last: screenToGround(t[0].clientX, t[0].clientY) }
 }, { passive: false })
+
+// ------------------------------------------------------------------ joystick (X/Z) + height buttons (Y)
+
+const stickEl = $('stick'), knobEl = $('knob')
+const stick = { x: 0, y: 0, id: null }   // -1..1, y = down on screen
+let liftDir = 0
+const STICK_RADIUS = 33                   // px the knob can travel from the centre
+
+function setKnob(x, y) { knobEl.style.transform = `translate(${x * STICK_RADIUS}px, ${y * STICK_RADIUS}px)` }
+function stickFrom(e) {
+  const r = stickEl.getBoundingClientRect()
+  let x = (e.clientX - (r.left + r.width / 2)) / STICK_RADIUS
+  let y = (e.clientY - (r.top + r.height / 2)) / STICK_RADIUS
+  const m = Math.hypot(x, y)
+  if (m > 1) { x /= m; y /= m }
+  stick.x = x; stick.y = y
+  setKnob(x, y)
+}
+function stickEnd(e) {
+  if (e && e.pointerId !== stick.id) return
+  stick.id = null; stick.x = stick.y = 0
+  stickEl.classList.remove('active')
+  setKnob(0, 0)
+}
+stickEl.addEventListener('pointerdown', e => {
+  if (stick.id !== null) return
+  e.preventDefault()
+  stick.id = e.pointerId
+  stickEl.setPointerCapture(e.pointerId)
+  stickEl.classList.add('active')
+  stickFrom(e)
+})
+stickEl.addEventListener('pointermove', e => { if (e.pointerId === stick.id) stickFrom(e) })
+for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) stickEl.addEventListener(ev, stickEnd)
+
+for (const [id, dir] of [['up', 1], ['down', -1]]) {
+  const b = $(id)
+  b.addEventListener('pointerdown', e => { e.preventDefault(); b.setPointerCapture(e.pointerId); liftDir = dir; b.classList.add('held') })
+  const stop = () => { if (liftDir === dir) liftDir = 0; b.classList.remove('held') }
+  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, stop)
+}
+
+function releaseControls() {
+  stickEnd(); liftDir = 0
+  $('up').classList.remove('held'); $('down').classList.remove('held')
+}
+
+const fwd = new THREE.Vector3(), right = new THREE.Vector3()
+function applyControls(dt) {
+  const mag = Math.hypot(stick.x, stick.y)
+  if (mag > 0.12) {                         // dead zone
+    // Push up = away from you, right = to your right (camera-relative, flat on the floor)
+    camera.getWorldDirection(fwd).setY(0)
+    if (fwd.lengthSq() < 1e-6) fwd.set(0, 0, -1)
+    fwd.normalize()
+    right.crossVectors(fwd, camera.up).normalize()
+    const dist = Math.hypot(targetPos.x - camera.position.x, targetPos.z - camera.position.z)
+    const speed = THREE.MathUtils.clamp(dist * TUNE.stickSpeed, TUNE.stickMin, TUNE.stickMax)
+    const k = speed * dt * Math.pow((mag - 0.12) / 0.88, 1.5) / mag // gentle near the centre for fine moves
+    targetPos.addScaledVector(right, stick.x * k).addScaledVector(fwd, -stick.y * k)
+  }
+  if (liftDir) {
+    const before = targetPos.y
+    targetPos.y = THREE.MathUtils.clamp(targetPos.y + liftDir * TUNE.liftSpeed * dt, 0, TUNE.maxHeight)
+    if (targetPos.y !== before) updateSizeLabel()
+  }
+}
 
 // ------------------------------------------------------------------ per-frame
 
@@ -346,6 +422,7 @@ function frame() {
   }
 
   if (state === 'placed') {
+    applyControls(dt)
     // Smooth follow (removes finger / pose jitter), pop-in on placement
     placed.position.lerp(targetPos, 1 - Math.exp(-dt * 14))
     let dy = targetYaw - placed.rotation.y
@@ -354,6 +431,9 @@ function frame() {
     const k = 0.6 + 0.4 * easeOutBack(popT) // quick pop-in
     const s = placed.scale.x + (userScale * k - placed.scale.x) * (popT < 1 ? 1 : 1 - Math.exp(-dt * 16))
     placed.scale.setScalar(Math.max(0.0001, s))
+    // Contact shadow stays on the floor when the model is raised, and fades with height
+    shadow.position.y = (0.002 - placed.position.y) / placed.scale.x
+    shadow.material.opacity = THREE.MathUtils.clamp(1 - placed.position.y / 1.5, 0.15, 1)
   }
 
   if (mixer) mixer.update(dt)

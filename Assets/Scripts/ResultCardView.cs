@@ -48,6 +48,7 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
     private RawImage thumbnail;
     private UIRoundedCorners thumbnailShape;
     private RectTransform badge;
+    private HeartButton heart;
     private UIRoundedCorners badgeShape;
     private TextMeshProUGUI badgeText;
     private TextMeshProUGUI title;
@@ -110,6 +111,29 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
 
     /// <summary>Keeps the card glowing while its model downloads.</summary>
     public void SetBusy(bool value) => busy = value;
+
+    /// <summary>Shows a ♥ (save to favourites) in the picture's top-right corner for this model.</summary>
+    public void SetFavourite(Favourites.Item item)
+    {
+        Build();
+        if (thumbnail == null || item == null) return;
+        if (heart == null)
+        {
+            heart = HeartButton.Create(thumbnail.transform, 60f);
+            var hr = (RectTransform)heart.transform;
+            hr.anchorMin = hr.anchorMax = hr.pivot = new Vector2(1f, 1f);
+            if (lastCardWidth > 0f) SizeHeart(lastCardWidth);
+        }
+        heart.Bind(item);
+    }
+
+    private void SizeHeart(float w)
+    {
+        if (heart == null) return;
+        float pad = w * 0.035f;
+        heart.SetSize(w * 0.17f);
+        ((RectTransform)heart.transform).anchoredPosition = new Vector2(-pad, -pad);
+    }
 
     // ------------------------------------------------------------------ setup
 
@@ -324,6 +348,7 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
             badgeText.fontSize = bh * 0.58f;
             badgeShape.SetBorder(Mathf.Max(1f, w * 0.003f));
         }
+        SizeHeart(w);
 
         LayoutRebuilder.MarkLayoutForRebuild(rect);
     }

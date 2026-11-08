@@ -89,10 +89,14 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
 
     // ------------------------------------------------------------------ public API
 
-    public static void Create(ScrollRect results, SketchfabAPIManager api, TMP_InputField searchBar)
+    /// <summary>True once the first slide's picture is on screen (or loading finished with nothing to show).</summary>
+    public bool IsReady => slides.Count > 0 ? slides[0].Texture != null : loadingDone;
+
+    public static RecommendationsPanel Create(ScrollRect results, SketchfabAPIManager api, TMP_InputField searchBar)
     {
-        if (results == null || api == null) return;
-        if (results.GetComponentInChildren<RecommendationsPanel>(true) != null) return;
+        if (results == null || api == null) return null;
+        var existing = results.GetComponentInChildren<RecommendationsPanel>(true);
+        if (existing != null) return existing;
 
         var go = new GameObject("Recommendations", typeof(RectTransform));
         var rt = (RectTransform)go.transform;
@@ -111,6 +115,7 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
         panel.Build(rt);
         panel.BuildBackButton(results);
         panel.StartCoroutine(panel.LoadRecommendations());
+        return panel;
     }
 
     /// <summary>Remembers a search so the slideshow can recommend "Because you searched …".</summary>
@@ -145,24 +150,51 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
         var hit = gameObject.AddComponent<Image>();
         hit.color = new Color(0f, 0f, 0f, 0f);
 
-        var heading = NewText("Heading", rt, UIFonts.Bold, 78f, TextMain, TextAlignmentOptions.MidlineLeft);
+        // Top: quick actions (Favourites · Animated · Recents · Surprise)
+        quickRow = NewRect("QuickActions", rt);
+        quickRow.anchorMin = new Vector2(0f, 1f); quickRow.anchorMax = new Vector2(1f, 1f);
+        quickRow.pivot = new Vector2(0.5f, 1f);
+        quickRow.offsetMin = new Vector2(0f, -HeadingTop - QuickRowHeight); quickRow.offsetMax = new Vector2(0f, -HeadingTop);
+        var ql = quickRow.gameObject.AddComponent<HorizontalLayoutGroup>();
+        ql.padding = new RectOffset(80, 80, 0, 0);
+        ql.spacing = 30f;
+        ql.childAlignment = TextAnchor.MiddleCenter;
+        ql.childControlWidth = ql.childControlHeight = true;
+        ql.childForceExpandWidth = ql.childForceExpandHeight = true;   // 4 equal tiles across
+        BuildQuickActions(quickRow);
+
+        // Heading in the same style as "Explore by category": cyan accent bar + bold title.
+        // Its row is moved down in Update so it always sits right above the cards (no empty gap).
+        headingRow = NewRect("HeadingRow", rt);
+        headingRow.anchorMin = new Vector2(0f, 1f); headingRow.anchorMax = new Vector2(1f, 1f);
+        headingRow.pivot = new Vector2(0.5f, 1f);
+        headingRow.sizeDelta = new Vector2(0f, 120f);
+        headingRow.anchoredPosition = new Vector2(0f, -HeadingY);
+
+        var bar = NewRect("Accent", headingRow);
+        bar.anchorMin = bar.anchorMax = new Vector2(0f, 1f);
+        bar.pivot = new Vector2(0f, 1f);
+        bar.anchoredPosition = new Vector2(80f, -28f);
+        bar.sizeDelta = new Vector2(12f, 64f);
+        var barImg = bar.gameObject.AddComponent<Image>();
+        barImg.color = Neon;
+        barImg.raycastTarget = false;
+        bar.gameObject.AddComponent<UIRoundedCorners>().SetRadius(6f);
+
+        var heading = NewText("Heading", headingRow, UIFonts.Bold, 70f, TextMain, TextAlignmentOptions.MidlineLeft);
         heading.text = "Recommended for you";
         var hr = heading.rectTransform;
-        hr.anchorMin = new Vector2(0f, 1f); hr.anchorMax = new Vector2(1f, 1f);
-        hr.pivot = new Vector2(0.5f, 1f);
-        hr.offsetMin = new Vector2(80f, -170f); hr.offsetMax = new Vector2(-80f, -60f);
-
-        var hint = NewText("Hint", rt, UIFonts.Regular, 48f, TextSoft, TextAlignmentOptions.MidlineLeft);
-        hint.text = "Tap a card to see all models like it";
-        var hn = hint.rectTransform;
-        hn.anchorMin = new Vector2(0f, 1f); hn.anchorMax = new Vector2(1f, 1f);
-        hn.pivot = new Vector2(0.5f, 1f);
-        hn.offsetMin = new Vector2(80f, -230f); hn.offsetMax = new Vector2(-80f, -165f);
+        hr.anchorMin = Vector2.zero; hr.anchorMax = Vector2.one;
+        hr.offsetMin = new Vector2(116f, 0f); hr.offsetMax = new Vector2(-80f, 0f);
 
         slideArea = NewRect("Slides", rt);
         slideArea.anchorMin = Vector2.zero; slideArea.anchorMax = Vector2.one;
-        slideArea.offsetMin = new Vector2(0f, 190f);
-        slideArea.offsetMax = new Vector2(0f, -260f);
+        slideArea.offsetMin = new Vector2(0f, 190f + CategoryRow.Height); // "Explore by category" sits below
+        slideArea.offsetMax = new Vector2(0f, -HeadingY - 140f);
+        // Clip the cards to the panel: the peeking neighbours must never cross the neon frame
+        var mask = slideArea.gameObject.AddComponent<RectMask2D>();
+        mask.padding = new Vector4(SideClip, 0f, SideClip, 0f);
+        mask.softness = new Vector2Int(24, 0);
 
         statusText = NewText("Status", slideArea, UIFonts.SemiBold, 56f, TextSoft, TextAlignmentOptions.Center);
         statusText.text = "Finding models for you…";
@@ -180,7 +212,7 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
         dotsRow = NewRect("Dots", rt);
         dotsRow.anchorMin = dotsRow.anchorMax = new Vector2(0.5f, 0f);
         dotsRow.pivot = new Vector2(0.5f, 0f);
-        dotsRow.anchoredPosition = new Vector2(0f, 100f);
+        dotsRow.anchoredPosition = new Vector2(0f, 100f + CategoryRow.Height);
         var hl = dotsRow.gameObject.AddComponent<HorizontalLayoutGroup>();
         hl.spacing = 18f;
         hl.childAlignment = TextAnchor.MiddleCenter;
@@ -188,6 +220,9 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
         hl.childForceExpandWidth = hl.childForceExpandHeight = false;
         var fit = dotsRow.gameObject.AddComponent<ContentSizeFitter>();
         fit.horizontalFit = fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+        // "Explore by category" strip under the slideshow (loads after the recommendations)
+        CategoryRow.Create(rt, api, searchBar, () => ShouldPause, () => loadingDone);
     }
 
     private Slide AddSlide(string uid, string caption, string title, string modelName, string author, string hiResUrl, string query)
@@ -261,6 +296,13 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
         vr.pivot = new Vector2(1f, 0f);
         vr.sizeDelta = new Vector2(400f, 150f);
         vr.anchoredPosition = new Vector2(-56f, 60f);
+
+        // ♥ save to favourites (top-right of the card)
+        var heart = HeartButton.Create(s.Rect, 140f);
+        var hrt = (RectTransform)heart.transform;
+        hrt.anchorMin = hrt.anchorMax = hrt.pivot = new Vector2(1f, 1f);
+        hrt.anchoredPosition = new Vector2(-40f, -40f);
+        heart.Bind(new Favourites.Item { uid = uid, name = modelName, author = author, thumb = hiResUrl, hiRes = hiResUrl });
 
         // Tap anywhere on the card also opens it
         var btn = s.Rect.gameObject.AddComponent<Button>();
@@ -461,26 +503,227 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
         img.raycastTarget = false;
     }
 
+    // ------------------------------------------------------------------ quick actions
+
+    static readonly Color TileFill = new Color(0.06f, 0.08f, 0.105f, 1f);
+    private TextMeshProUGUI favCountText;
+    private GameObject favCountBadge;
+    private string lastSurprise;
+
+    /// <summary>Extra fun searches for "Surprise" (on top of every category).</summary>
+    static readonly string[] SurpriseExtras =
+    {
+        "robot", "spaceship", "dragon", "castle", "astronaut", "guitar", "treasure chest", "mushroom",
+        "sports car", "dinosaur", "cat", "owl", "lighthouse", "rocket", "sneakers", "vintage camera",
+    };
+
+    private void BuildQuickActions(RectTransform row)
+    {
+        QuickTile(row, "Favourites", Favourites.HeartFilled, () => RunQuick(() => api.ShowFavourites()), withCount: true);
+        QuickTile(row, "Animated", UIIcons.Get(UIIcons.Animated), () => RunQuick(() => api.SearchAnimated()));
+        QuickTile(row, "Recents", UIIcons.Get(UIIcons.Recent), () => RunQuick(() => api.ShowRecents()));
+        QuickTile(row, "Surprise", UIIcons.Get(UIIcons.Dice), Surprise, spinIcon: true);
+        RefreshSavedCount();
+        Favourites.Changed += RefreshSavedCount;
+    }
+
+    /// <summary>Glass tile: glowing round icon badge on top, label underneath (optional count bubble).</summary>
+    private void QuickTile(RectTransform row, string label, Texture icon, UnityEngine.Events.UnityAction onClick,
+                           bool withCount = false, bool spinIcon = false)
+    {
+        var rt = NewRect("Quick " + label, row);
+        rt.gameObject.AddComponent<LayoutElement>().flexibleWidth = 1f;
+        // Calm, flat style: dark card, hairline border, tinted icon circle (no glow)
+        Surface(rt.gameObject, TileFill, 40f, new Color(1f, 1f, 1f, 0.08f), 2f);
+
+        const float badge = 116f;
+
+        var circle = NewRect("Badge", rt);
+        circle.anchorMin = circle.anchorMax = new Vector2(0.5f, 1f);
+        circle.pivot = new Vector2(0.5f, 1f);
+        circle.sizeDelta = new Vector2(badge, badge);
+        circle.anchoredPosition = new Vector2(0f, -26f);
+        Surface(circle.gameObject, new Color(Neon.r, Neon.g, Neon.b, 0.10f), 9999f, Neon, 0f);
+        circle.GetComponent<Image>().raycastTarget = false;
+
+        var iconRt = NewRect("Icon", circle);
+        iconRt.anchorMin = iconRt.anchorMax = new Vector2(0.5f, 0.5f);
+        iconRt.sizeDelta = new Vector2(58f, 58f);
+        var img = iconRt.gameObject.AddComponent<RawImage>();
+        img.texture = icon;
+        img.color = Neon;
+        img.raycastTarget = false;
+
+        var text = NewText("Label", rt, UIFonts.SemiBold, 40f, new Color(0.88f, 0.91f, 0.94f, 1f), TextAlignmentOptions.Center);
+        text.text = label;
+        text.textWrappingMode = TextWrappingModes.NoWrap;
+        text.overflowMode = TextOverflowModes.Ellipsis;
+        var tr = text.rectTransform;
+        tr.anchorMin = new Vector2(0f, 0f); tr.anchorMax = new Vector2(1f, 0f);
+        tr.pivot = new Vector2(0.5f, 0f);
+        tr.offsetMin = new Vector2(10f, 18f); tr.offsetMax = new Vector2(-10f, 78f);
+
+        if (withCount)
+        {
+            // Small cyan bubble with the number of saved models, on the badge's top-right
+            var bubble = NewRect("Count", circle);
+            bubble.anchorMin = bubble.anchorMax = new Vector2(1f, 1f);
+            bubble.pivot = new Vector2(0.5f, 0.5f);
+            bubble.anchoredPosition = new Vector2(-14f, -14f);
+            Surface(bubble.gameObject, Neon, 9999f, TileFill, 4f);
+            bubble.GetComponent<Image>().raycastTarget = false;
+            var hl = bubble.gameObject.AddComponent<HorizontalLayoutGroup>();
+            hl.padding = new RectOffset(14, 14, 2, 2);
+            hl.childAlignment = TextAnchor.MiddleCenter;
+            hl.childControlWidth = hl.childControlHeight = true;
+            hl.childForceExpandWidth = hl.childForceExpandHeight = false;
+            var fit = bubble.gameObject.AddComponent<ContentSizeFitter>();
+            fit.horizontalFit = fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            favCountText = NewText("N", bubble, UIFonts.Display, 34f, Ink, TextAlignmentOptions.Center);
+            favCountText.textWrappingMode = TextWrappingModes.NoWrap;
+            var le = favCountText.gameObject.AddComponent<LayoutElement>();
+            le.minWidth = 26f;
+            favCountBadge = bubble.gameObject;
+        }
+
+        var btn = rt.gameObject.AddComponent<Button>();
+        btn.transition = Selectable.Transition.None;
+        btn.onClick.AddListener(onClick);
+        if (spinIcon) btn.onClick.AddListener(() => StartCoroutine(SpinOnce(iconRt)));
+        UIPress.Add(rt);
+    }
+
+    /// <summary>Clears the search bar, scrolls to the top and runs a quick-action list.</summary>
+    private void RunQuick(System.Action action)
+    {
+        lastInteraction = Time.unscaledTime;
+        if (api == null) return;
+        if (searchBar != null) searchBar.text = string.Empty;
+        if (resultsScroll != null) resultsScroll.verticalNormalizedPosition = 1f;
+        action();
+    }
+
+    /// <summary>"Surprise": searches a random category or fun topic (never the same twice in a row).</summary>
+    private void Surprise()
+    {
+        lastInteraction = Time.unscaledTime;
+        if (api == null) return;
+        var pool = new List<string>(SurpriseExtras);
+        foreach (var c in CategoryRow.Categories) pool.Add(c.query);
+        pool.Remove(lastSurprise);
+        string q = pool[Random.Range(0, pool.Count)];
+        lastSurprise = q;
+        StartCoroutine(SearchAfterSpin(q));
+    }
+
+    private IEnumerator SearchAfterSpin(string query)
+    {
+        yield return new WaitForSecondsRealtime(0.35f); // let the dice roll first
+        if (searchBar != null) searchBar.text = query;
+        if (resultsScroll != null) resultsScroll.verticalNormalizedPosition = 1f;
+        api.SearchModels(query);
+    }
+
+    private static IEnumerator SpinOnce(RectTransform icon)
+    {
+        for (float t = 0f; t < 1f; t += Time.unscaledDeltaTime / 0.45f)
+        {
+            float e = 1f - Mathf.Pow(1f - t, 3f);
+            icon.localRotation = Quaternion.Euler(0f, 0f, -360f * e);
+            icon.localScale = Vector3.one * (1f + 0.2f * Mathf.Sin(t * Mathf.PI));
+            yield return null;
+        }
+        icon.localRotation = Quaternion.identity;
+        icon.localScale = Vector3.one;
+    }
+
+    private void RefreshSavedCount()
+    {
+        if (favCountText == null) return;
+        int n = Favourites.Count;
+        favCountText.text = n > 99 ? "99+" : n.ToString();
+        favCountBadge.SetActive(n > 0);
+    }
+
     /// <summary>Previous / next card (wraps around).</summary>
     private void Step(int dir)
     {
         if (slides.Count == 0) return;
-        target = (target + dir + slides.Count) % slides.Count;
+        target += dir; // endless: indices wrap in the layout
         lastInteraction = Time.unscaledTime;
     }
 
-    /// <summary>"‹ Recommended" pill shown above the search results; tapping it returns to the slideshow.</summary>
+    // ------------------------------------------------------------------ results bar
+
+    static readonly Color BarFill = new Color(0.06f, 0.085f, 0.11f, 0.96f);
+    static readonly Color BarBorder = new Color(1f, 1f, 1f, 0.12f);
+    private TextMeshProUGUI resultsTitle, filterCountText;
+    private GameObject filterPill, filterCountBubble;
+    private UIRoundedCorners filterShape;
+    private string shownTitleFor;
+    private int shownFilterCount = -1;
+
+    /// <summary>Bar above the search results: ‹ Home · what you're looking at · Filters (with active count).</summary>
     private void BuildBackButton(ScrollRect results)
     {
-        var rt = NewRect("BackToRecommended", results.transform);
-        rt.SetAsLastSibling();
-        rt.anchorMin = rt.anchorMax = new Vector2(0f, 1f);
-        rt.pivot = new Vector2(0f, 1f);
-        rt.anchoredPosition = new Vector2(64f, -36f);
-        Surface(rt.gameObject, new Color(0.04f, 0.06f, 0.085f, 0.92f), 9999f, new Color(Neon.r, Neon.g, Neon.b, 0.6f), 3f);
+        var bar = NewRect("ResultsBar", results.transform);
+        bar.SetAsLastSibling();
+        bar.anchorMin = new Vector2(0f, 1f); bar.anchorMax = new Vector2(1f, 1f);
+        bar.pivot = new Vector2(0.5f, 1f);
+        bar.offsetMin = new Vector2(64f, -36f - 124f); bar.offsetMax = new Vector2(-64f, -36f);
+
+        // ‹ Home
+        var home = BarPill(bar, "Home", UIIcons.Back, "Home", new Vector2(0f, 0.5f), out _);
+        home.GetComponent<Button>().onClick.AddListener(GoHome);
+
+        // Filters (right)
+        var filters = BarPill(bar, "Filters", UIIcons.Filter, "Filters", new Vector2(1f, 0.5f), out var filtersRow);
+        filterPill = filters.gameObject;
+        filterShape = filters.GetComponent<UIRoundedCorners>();
+        filters.GetComponent<Button>().onClick.AddListener(() =>
+        {
+            if (api != null) FilterSheet.Open(() =>
+            {
+                if (resultsScroll != null) resultsScroll.verticalNormalizedPosition = 1f;
+                api.ApplyFilters();
+            });
+        });
+        var bubble = NewRect("Count", filtersRow);
+        Surface(bubble.gameObject, Neon, 9999f, Neon, 0f);
+        bubble.GetComponent<Image>().raycastTarget = false;
+        var bl = bubble.gameObject.AddComponent<HorizontalLayoutGroup>();
+        bl.padding = new RectOffset(14, 14, 0, 0);
+        bl.childAlignment = TextAnchor.MiddleCenter;
+        bl.childControlWidth = bl.childControlHeight = true;
+        bl.childForceExpandWidth = bl.childForceExpandHeight = false;
+        var ble = bubble.gameObject.AddComponent<LayoutElement>();
+        ble.minHeight = ble.preferredHeight = 52f;
+        ble.minWidth = 52f;
+        filterCountText = NewText("N", bubble, UIFonts.Display, 36f, Ink, TextAlignmentOptions.Center);
+        filterCountBubble = bubble.gameObject;
+
+        // Title in the middle: "sofa", Favourites, Recently viewed …
+        resultsTitle = NewText("Title", bar, UIFonts.Bold, 52f, TextMain, TextAlignmentOptions.Center);
+        resultsTitle.textWrappingMode = TextWrappingModes.NoWrap;
+        resultsTitle.overflowMode = TextOverflowModes.Ellipsis;
+        var tr = resultsTitle.rectTransform;
+        tr.anchorMin = Vector2.zero; tr.anchorMax = Vector2.one;
+        tr.offsetMin = new Vector2(330f, 0f); tr.offsetMax = new Vector2(-400f, 0f);
+
+        backGroup = bar.gameObject.AddComponent<CanvasGroup>();
+        backGroup.alpha = 0f;
+        backGroup.blocksRaycasts = false;
+    }
+
+    /// <summary>Glass pill with an icon and a label (auto width), anchored to one side of the bar.</summary>
+    private RectTransform BarPill(RectTransform bar, string name, string icon, string label, Vector2 anchor, out RectTransform row)
+    {
+        var rt = NewRect(name, bar);
+        rt.anchorMin = rt.anchorMax = rt.pivot = anchor;
+        Surface(rt.gameObject, BarFill, 9999f, BarBorder, 2f);
         var hl = rt.gameObject.AddComponent<HorizontalLayoutGroup>();
-        hl.padding = new RectOffset(30, 44, 22, 22);
-        hl.spacing = 14f;
+        hl.padding = new RectOffset(34, 42, 30, 30);
+        hl.spacing = 16f;
         hl.childAlignment = TextAnchor.MiddleCenter;
         hl.childControlWidth = hl.childControlHeight = true;
         hl.childForceExpandWidth = hl.childForceExpandHeight = false;
@@ -489,24 +732,44 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
 
         var iconRt = NewRect("Icon", rt);
         var le = iconRt.gameObject.AddComponent<LayoutElement>();
-        le.preferredWidth = le.preferredHeight = 56f;
+        le.preferredWidth = le.preferredHeight = 52f;
         var img = iconRt.gameObject.AddComponent<RawImage>();
-        img.texture = UIIcons.Get(UIIcons.Back);
+        img.texture = UIIcons.Get(icon);
         img.color = Neon;
         img.raycastTarget = false;
 
-        var t = NewText("Text", rt, UIFonts.SemiBold, 54f, TextMain, TextAlignmentOptions.MidlineLeft);
-        t.text = "Recommended";
+        var t = NewText("Text", rt, UIFonts.SemiBold, 48f, TextMain, TextAlignmentOptions.MidlineLeft);
+        t.text = label;
         t.textWrappingMode = TextWrappingModes.NoWrap;
 
         var btn = rt.gameObject.AddComponent<Button>();
         btn.transition = Selectable.Transition.None;
-        btn.onClick.AddListener(GoHome);
         UIPress.Add(rt);
+        row = rt;
+        return rt;
+    }
 
-        backGroup = rt.gameObject.AddComponent<CanvasGroup>();
-        backGroup.alpha = 0f;
-        backGroup.blocksRaycasts = false;
+    /// <summary>Keeps the bar's title and the Filters pill (visibility, count) up to date.</summary>
+    private void UpdateResultsBar()
+    {
+        if (api == null || resultsTitle == null) return;
+        string q = api.CurrentQuery;
+        if (q != shownTitleFor)
+        {
+            shownTitleFor = q;
+            resultsTitle.text = q == SketchfabAPIManager.SavedQuery ? "Favourites"
+                              : SketchfabAPIManager.IsQuickList(q) ? q
+                              : string.IsNullOrEmpty(q) ? "" : "\u201C" + q + "\u201D";
+            filterPill.SetActive(api.CanFilter);
+        }
+        int n = SearchFilters.ActiveCount;
+        if (n != shownFilterCount)
+        {
+            shownFilterCount = n;
+            filterCountBubble.SetActive(n > 0);
+            filterCountText.text = n.ToString();
+            filterShape.SetBorderColor(n > 0 ? new Color(Neon.r, Neon.g, Neon.b, 0.7f) : BarBorder);
+        }
     }
 
     /// <summary>Clears the search and brings the recommendations slideshow back.</summary>
@@ -542,6 +805,7 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
 
     void OnDestroy()
     {
+        Favourites.Changed -= RefreshSavedCount;
         foreach (var s in slides) if (s.Texture != null) Destroy(s.Texture);
     }
 
@@ -563,7 +827,7 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
         RectTransformUtility.ScreenPointToLocalPointInRectangle(slideArea, e.pressPosition, cam, out Vector2 a);
         RectTransformUtility.ScreenPointToLocalPointInRectangle(slideArea, e.position, cam, out Vector2 b);
         float delta = (b.x - a.x) / SlideStep();
-        position = Mathf.Clamp(dragStartPosition - delta, -0.35f, slides.Count - 1 + 0.35f);
+        position = dragStartPosition - delta; // endless in both directions
         lastInteraction = Time.unscaledTime;
     }
 
@@ -575,7 +839,6 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
         if (moved > 0.15f) target = start + 1;
         else if (moved < -0.15f) target = start - 1;
         else target = start;
-        target = Mathf.Clamp(target, 0, slides.Count - 1);
         lastInteraction = Time.unscaledTime;
         // Let the Button ignore the click that ends a swipe
         StartCoroutine(EndDragNextFrame());
@@ -608,7 +871,8 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
             backGroup.blocksRaycasts = backGroup.interactable = resultsShowing && backGroup.alpha > 0.5f;
         }
         if (gridLayout != null) gridLayout.ExtraTopPadding = resultsShowing ? BackBarHeight : 0f;
-        if (resultsShowing && Input.GetKeyDown(KeyCode.Escape)) GoHome(); // Android back button
+        if (resultsShowing) UpdateResultsBar();
+        if (resultsShowing && Input.GetKeyDown(KeyCode.Escape) && !FilterSheet.ConsumedBack) GoHome(); // Android back button
 
         // Arrows only when there is somewhere to go
         if (navGroup != null)
@@ -617,28 +881,36 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
             navGroup.alpha = Mathf.MoveTowards(navGroup.alpha, nav ? 1f : 0f, dt * 5f);
             navGroup.blocksRaycasts = navGroup.interactable = nav;
         }
+        // Card size; the heading row moves down by the unused height so it hugs the cards
+        Rect area = slideArea.rect;
+        cardW = area.width * CardWidth;
+        cardH = Mathf.Min(area.height, cardW * 1.12f);
+        cardSpare = Mathf.Max(0f, area.height - cardH);
+        if (headingRow != null) headingRow.anchoredPosition = new Vector2(0f, -HeadingY - cardSpare);
+
         if (slides.Count == 0) return;
 
         // Auto-advance (loops back to the first slide)
         if (show && !dragging && Time.unscaledTime - lastInteraction > AutoAdvanceSeconds)
         {
-            target = (target + 1) % slides.Count;
+            target++; // endless: keeps going forward, wrapping around
             lastInteraction = Time.unscaledTime;
         }
         if (!dragging) position = Mathf.Lerp(position, target, 1f - Mathf.Exp(-9f * dt));
 
-        // Layout: current card centered, neighbours peek in smaller and dimmer
-        Rect area = slideArea.rect;
-        float w = area.width * 0.82f;
-        float h = Mathf.Min(area.height, w * 1.3f);
+        // Layout: current card centered, neighbours peek in smaller and dimmer.
+        // Endless: each card's distance from the current one is wrapped around the ring of slides.
+        float w = cardW, h = cardH, spare = cardSpare;
         float step = w + 48f;
-        for (int i = 0; i < slides.Count; i++)
+        int n = slides.Count;
+        for (int i = 0; i < n; i++)
         {
             var s = slides[i];
             float d = i - position;
+            d -= n * Mathf.Round(d / n);
             float ad = Mathf.Abs(d);
             s.Rect.sizeDelta = new Vector2(w, h);
-            s.Rect.anchoredPosition = new Vector2(d * step, 0f);
+            s.Rect.anchoredPosition = new Vector2(d * step, -spare * 0.5f); // bottom-aligned in the area
             s.Rect.localScale = Vector3.one * Mathf.Lerp(1f, 0.9f, Mathf.Clamp01(ad));
             float targetAlpha = Mathf.Lerp(1f, 0.45f, Mathf.Clamp01(ad));
             s.Group.alpha = Mathf.MoveTowards(s.Group.alpha, targetAlpha, dt * 4f);
@@ -654,7 +926,7 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
         }
 
         // Dots
-        int current = Mathf.Clamp(Mathf.RoundToInt(position), 0, slides.Count - 1);
+        int current = ((Mathf.RoundToInt(position) % n) + n) % n;
         for (int i = 0; i < dots.Count; i++)
         {
             bool on = i == current;
@@ -664,7 +936,14 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
         }
     }
 
-    private float SlideStep() => slideArea.rect.width * 0.82f + 48f;
+    const float CardWidth = 0.70f; // share of the panel width (0.82 → 0.76 → 0.70)
+    const float HeadingTop = 30f;        // quick-action row starts this far below the panel top
+    const float QuickRowHeight = 250f;
+    const float HeadingY = HeadingTop + QuickRowHeight + 30f; // heading row top when the cards fill their area
+    private RectTransform quickRow, headingRow;
+    const float SideClip = 36f;    // cards are cut this far inside the panel edge (clear of the frame border)
+    private float cardW, cardH, cardSpare;
+    private float SlideStep() => slideArea.rect.width * CardWidth + 48f;
 
     // ------------------------------------------------------------------ helpers
 

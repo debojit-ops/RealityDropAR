@@ -13,8 +13,20 @@ public class SearchUI : MonoBehaviour
     [Tooltip("Threshold ratio (0.0 = bottom, 1.0 = top) to trigger next page load.")]
     public float loadMoreThreshold = 0.15f;
 
+    private bool inactiveCopy;
+
     void Awake()
     {
+        // SampleScene also has a leftover, unassigned SearchUI on the SearchButton object: switch it off so it
+        // doesn't open a second loading screen or add duplicate scroll listeners.
+        if (searchBar == null && searchButton == null)
+        {
+            inactiveCopy = true;
+            Debug.Log($"[SearchUI] '{name}' has no search bar/button assigned — disabled (duplicate component).");
+            enabled = false;
+            return;
+        }
+
         // Keep the whole screen clear of notches / punch-hole cameras (runs before the search row is styled)
         if (searchBar != null) SafeAreaFitter.Apply(searchBar.GetComponentInParent<Canvas>());
 
@@ -37,15 +49,21 @@ public class SearchUI : MonoBehaviour
 
     void Start()
     {
+        if (inactiveCopy) return;
         // Premium search row (glass field + gradient button), aligned with the results grid
         SearchBarStyler.Apply(searchBar, searchButton, scrollRect != null ? (RectTransform)scrollRect.transform : null);
 
         // "Recommended: popular anime characters" while the results area is empty
-        if (searchBar != null) RecommendationsPanel.Create(scrollRect, api, searchBar);
+        RecommendationsPanel panel = null;
+        if (searchBar != null) panel = RecommendationsPanel.Create(scrollRect, api, searchBar);
+
+        // Loading screen until the first recommendation (or the restored results) is ready
+        LandingLoader.Show(panel, api != null && api.resultsParent != null ? api.resultsParent : scrollRect != null ? scrollRect.content : null);
     }
 
     void OnDestroy()
     {
+        if (inactiveCopy) return;
         if (searchButton) searchButton.onClick.RemoveListener(OnSearchClicked);
         if (searchBar) searchBar.onSubmit.RemoveListener(OnSubmit);
 

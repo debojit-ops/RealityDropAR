@@ -38,7 +38,18 @@
       </div>
     </div>
     <div id="shutterRow" class="hidden">
+      <!-- Joystick: move the model left/right and away/towards you (X/Z, relative to the camera) -->
+      <div id="stick" aria-label="Move model">
+        <svg class="arrows" viewBox="0 0 100 100"><path d="M50 9l-6 6M50 9l6 6M50 91l-6-6M50 91l6-6M9 50l6-6M9 50l6 6M91 50l-6-6M91 50l-6 6"/></svg>
+        <div id="knob"></div>
+      </div>
       <button id="shutter" aria-label="Take photo"><span></span></button>
+      <!-- Height: hold to raise / lower the model (Y) -->
+      <div id="lift">
+        <button id="up" aria-label="Raise model"><svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg></button>
+        <span>Y</span>
+        <button id="down" aria-label="Lower model"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+      </div>
     </div>
     <button id="place" class="primary" disabled>PLACE MODEL</button>
     <div id="size" class="pill hidden">100%</div>

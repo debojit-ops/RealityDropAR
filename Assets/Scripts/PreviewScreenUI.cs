@@ -151,13 +151,25 @@ public class PreviewScreenUI : MonoBehaviour
         var back = IconButton(bar, "Back", UIIcons.Back, new Vector2(0f, 0.5f), new Vector2(20f * K + 22f * K, 0f), OnBack);
         var info = IconButton(bar, "Info", UIIcons.Info, new Vector2(1f, 0.5f), new Vector2(-20f * K - 22f * K, 0f), ToggleInfo);
 
+        // ♥ save to favourites, left of the info button
+        string uid = PlayerPrefs.GetString("LastModelUid", "");
+        if (!string.IsNullOrEmpty(uid))
+        {
+            var heart = HeartButton.Create(bar, 44f * K);
+            var hrt = (RectTransform)heart.transform;
+            hrt.anchorMin = hrt.anchorMax = new Vector2(1f, 0.5f);
+            hrt.anchoredPosition = new Vector2(-20f * K - 44f * K - 10f * K - 22f * K, 0f);
+            string thumb = PlayerPrefs.GetString("LastModelThumb", "");
+            heart.Bind(new Favourites.Item { uid = uid, name = title, author = author, thumb = thumb, hiRes = thumb });
+        }
+
         var titleText = NewText("Title", bar, UIFonts.SemiBold, 17f * K, TextMain, TextAlignmentOptions.Center);
         titleText.text = title;
         titleText.textWrappingMode = TextWrappingModes.NoWrap;
         titleText.overflowMode = TextOverflowModes.Ellipsis;
         var tr = titleText.rectTransform;
         tr.anchorMin = tr.anchorMax = new Vector2(0.5f, 0.5f);
-        tr.sizeDelta = new Vector2(230f * K, 22f * K);
+        tr.sizeDelta = new Vector2(160f * K, 22f * K); // room for back + ♥ + info
         tr.anchoredPosition = new Vector2(0f, string.IsNullOrEmpty(author) ? 0f : 9f * K);
 
         if (!string.IsNullOrEmpty(author))
@@ -168,7 +180,7 @@ public class PreviewScreenUI : MonoBehaviour
             authorText.overflowMode = TextOverflowModes.Ellipsis;
             var ar = authorText.rectTransform;
             ar.anchorMin = ar.anchorMax = new Vector2(0.5f, 0.5f);
-            ar.sizeDelta = new Vector2(230f * K, 18f * K);
+            ar.sizeDelta = new Vector2(160f * K, 18f * K);
             ar.anchoredPosition = new Vector2(0f, -12f * K);
         }
     }

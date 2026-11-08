@@ -70,8 +70,11 @@ public class SketchfabAPIManager : MonoBehaviour
 
     private IEnumerator RestoreSession()
     {
+        if (SearchSession.Query == SavedQuery) { ShowFavourites(); yield break; } // rebuilt fresh (likes may have changed)
+        if (SearchSession.Query == RecentQuery) { ShowRecents(); yield break; }
         SearchSession.MarkRestored();
         currentQuery = SearchSession.Query;
+        currentFilter = currentQuery == AnimatedQuery ? AnimatedFilter : null;
         nextPageUrl = SearchSession.NextPageUrl;
         pagesLeftToAutoLoad = 0; // more pages load as the user scrolls
         shownThisSearch = 0;
@@ -79,7 +82,7 @@ public class SketchfabAPIManager : MonoBehaviour
 
         var searchUI = FindFirstObjectByType<SearchUI>();
         if (searchUI != null && searchUI.searchBar != null)
-            searchUI.searchBar.text = currentQuery; // also shows the clear (×) button
+            searchUI.searchBar.text = IsQuickList(currentQuery) ? string.Empty : currentQuery; // also shows the clear (×) button
 
         ClearResults();
         int index = 0;
@@ -108,6 +111,11 @@ public class SketchfabAPIManager : MonoBehaviour
         card.SetInfo(entry.Name, entry.Author);
         card.HiResThumbnailUrl = entry.HiResThumbnailUrl;
         card.SetAppearDelay(appearIndex * 0.035f); // staggered pop-in
+        card.SetFavourite(new Favourites.Item
+        {
+            uid = entry.Uid, name = entry.Name, author = entry.Author,
+            thumb = entry.ThumbnailUrl, hiRes = entry.HiResThumbnailUrl
+        });
 
         var img = card.Thumbnail;
         if (img != null)
@@ -121,8 +129,8 @@ public class SketchfabAPIManager : MonoBehaviour
         var btn = card.GetComponent<Button>();
         if (btn != null)
         {
-            string capturedUid = entry.Uid;
-            btn.onClick.AddListener(() => OnModelSelected(capturedUid, card));
+            string capturedUid = entry.Uid, capturedThumb = entry.ThumbnailUrl;
+            btn.onClick.AddListener(() => OnModelSelected(capturedUid, card, capturedThumb));
         }
         shownThisSearch++;
     }
@@ -153,18 +161,64 @@ public class SketchfabAPIManager : MonoBehaviour
             return;
         }
 
-        currentQuery = query.Trim();
+        StartSearch(query.Trim(), null, remember: true);
+    }
+
+    public const string AnimatedQuery = "Animated models", RecentQuery = "Recently viewed";
+    const string AnimatedFilter = "animated=true&staffpicked=true";
+    private string currentFilter;   // extra search parameters instead of a text query (quick actions)
+    private string lastThumbUrl;
+
+    /// <summary>True for the quick-action lists (their label is not typed into the search bar).</summary>
+    public static bool IsQuickList(string query) => query == SavedQuery || query == AnimatedQuery || query == RecentQuery;
+
+    public string CurrentQuery => currentQuery;
+
+    /// <summary>Filters apply to text searches and the Animated list (not to Favourites / Recents).</summary>
+    public bool CanFilter => !string.IsNullOrEmpty(currentQuery) && currentQuery != SavedQuery && currentQuery != RecentQuery;
+
+    /// <summary>Runs the current search again with the filters from the filter sheet.</summary>
+    public void ApplyFilters()
+    {
+        if (!CanFilter || string.IsNullOrEmpty(apiToken)) return;
+        if (currentQuery == AnimatedQuery) SearchAnimated();
+        else StartSearch(currentQuery, null, remember: false);
+    }
+
+    private string NoResultsMessage() => SearchFilters.ActiveCount > 0
+        ? $"No models match these filters for \"{currentQuery}\". Try removing some."
+        : $"No free downloadable models found for \"{currentQuery}\".";
+
+    /// <summary>"Animated" quick action: Sketchfab staff-picked models that have animations.</summary>
+    public void SearchAnimated()
+    {
+        if (string.IsNullOrEmpty(apiToken)) return;
+        StartSearch(AnimatedQuery, AnimatedFilter, remember: false);
+    }
+
+    private string SearchUrl(string cursor = null)
+    {
+        string url = $"https://api.sketchfab.com/v3/search?type=models&downloadable=true&count={PageSize}&" +
+                     (currentFilter ?? "q=" + UnityWebRequest.EscapeURL(currentQuery ?? ""));
+        url += SearchFilters.ToQuery(); // sort / category / animated / staff picks / light models
+        return cursor == null ? url : url + "&cursor=" + UnityWebRequest.EscapeURL(cursor);
+    }
+
+    private void StartSearch(string label, string filter, bool remember)
+    {
+        currentQuery = label;
+        currentFilter = filter;
         nextPageUrl = null;
         // Load ONE extra page up front (more arrive as the user scrolls) — 5 pages at once flooded the network
         pagesLeftToAutoLoad = Mathf.Min(loadInfiniteNoLimit ? 9999 : autoLoadPages, MaxAutoLoadPages);
         shownThisSearch = 0;
         searchId++; // responses from older searches are ignored
         SearchSession.Begin(currentQuery);
-        RecommendationsPanel.RememberSearch(currentQuery); // personalizes the recommendations slideshow
+        if (remember) RecommendationsPanel.RememberSearch(currentQuery); // personalizes the recommendations slideshow
         ClearResults();
         SpawnSkeletons(); // shimmering placeholder cards until the first page arrives
 
-        string initialUrl = $"https://api.sketchfab.com/v3/search?type=models&downloadable=true&count={PageSize}&q={UnityWebRequest.EscapeURL(currentQuery)}";
+        string initialUrl = SearchUrl();
         StartCoroutine(FetchPageCoroutine(initialUrl, isNewSearch: true, searchId));
     }
 
@@ -240,7 +294,7 @@ public class SketchfabAPIManager : MonoBehaviour
         }
         else if (!string.IsNullOrEmpty(cursorToken))
         {
-            nextPageUrl = $"https://api.sketchfab.com/v3/search?type=models&downloadable=true&count={PageSize}&q={UnityWebRequest.EscapeURL(currentQuery ?? "")}&cursor={UnityWebRequest.EscapeURL(cursorToken)}";
+            nextPageUrl = SearchUrl(cursorToken);
         }
         else
         {
@@ -258,7 +312,7 @@ public class SketchfabAPIManager : MonoBehaviour
         {
             Debug.Log("[SketchfabAPIManager] No models found.");
             if (shownThisSearch == 0)
-                ShowMessage($"No free downloadable models found for \"{currentQuery}\".");
+                ShowMessage(NoResultsMessage());
             return;
         }
 
@@ -305,7 +359,7 @@ public class SketchfabAPIManager : MonoBehaviour
         }
         else if (shownThisSearch == 0 && !hasNextPage)
         {
-            ShowMessage($"No free downloadable models found for \"{currentQuery}\".");
+            ShowMessage(NoResultsMessage());
         }
     }
 
@@ -426,8 +480,39 @@ public class SketchfabAPIManager : MonoBehaviour
         ClearResults();
     }
 
-    private void OnModelSelected(string uid, ResultCardView card)
+    public const string SavedQuery = "Saved models";
+
+    /// <summary>Shows the user's saved (♥) models in the results grid. Back from a preview returns here.</summary>
+    public void ShowFavourites() =>
+        ShowList(SavedQuery, Favourites.All, "No saved models yet. Tap the heart on any model to save it.");
+
+    /// <summary>"Recents" quick action: models the user opened lately, newest first.</summary>
+    public void ShowRecents() =>
+        ShowList(RecentQuery, RecentModels.All, "Nothing here yet. Models you open will show up here.");
+
+    private void ShowList(string label, IReadOnlyList<Favourites.Item> items, string emptyMessage)
     {
+        searchId++;             // ignore any page still loading
+        currentQuery = label;
+        currentFilter = null;
+        nextPageUrl = null;
+        pagesLeftToAutoLoad = 0;
+        shownThisSearch = 0;
+        SearchSession.Begin(currentQuery);
+        ClearResults();
+        int index = 0;
+        foreach (var f in items)
+        {
+            var entry = SearchSession.Add(f.uid, f.name, f.author, f.thumb, string.IsNullOrEmpty(f.hiRes) ? f.thumb : f.hiRes);
+            SpawnResultCard(entry, Mathf.Min(index, 12));
+            index++;
+        }
+        if (index == 0) ShowMessage(emptyMessage);
+    }
+
+    private void OnModelSelected(string uid, ResultCardView card, string thumbUrl = null)
+    {
+        lastThumbUrl = thumbUrl;
         if (isDownloading) return; // ignore extra taps while a model is downloading
         busyCard = card;
         OpenModel(uid,
@@ -444,6 +529,10 @@ public class SketchfabAPIManager : MonoBehaviour
     public void OpenModel(string uid, string title, string author, Texture thumbnail, string hiResThumbnailUrl)
     {
         if (isDownloading || string.IsNullOrEmpty(uid)) return;
+        // "Recents" quick action: newest first (small thumbnail when we have it: lighter for the grid)
+        string small = string.IsNullOrEmpty(lastThumbUrl) ? hiResThumbnailUrl : lastThumbUrl;
+        lastThumbUrl = null;
+        RecentModels.Add(new Favourites.Item { uid = uid, name = title, author = author, thumb = small, hiRes = hiResThumbnailUrl });
         if (busyCard != null) busyCard.SetBusy(true); // card glows while its model downloads
 
         // Full-screen progress screen with the model's thumbnail, name and a live percentage
@@ -581,6 +670,8 @@ public class SketchfabAPIManager : MonoBehaviour
         PlayerPrefs.SetString("LastModelTitle", string.IsNullOrEmpty(modelTitle) ? "3D model" : modelTitle);
         PlayerPrefs.SetString("LastModelAuthor", modelAuthor ?? string.Empty);
         PlayerPrefs.SetString("LastModelSizeBytes", lastDownloadBytes.ToString());
+        PlayerPrefs.SetString("LastModelUid", uid);                     // ♥ on the preview screen
+        PlayerPrefs.SetString("LastModelThumb", pendingHiResUrl ?? string.Empty);
         PlayerPrefs.Save();
 
         if (downloadOverlay != null) downloadOverlay.SetOpening();
