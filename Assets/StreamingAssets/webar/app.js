@@ -6,6 +6,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from './lib/loaders/GLTFLoader.js'
 import { DRACOLoader } from './lib/loaders/DRACOLoader.js'
 import { RoomEnvironment } from './lib/environments/RoomEnvironment.js'
+import { FILTER_FRAGMENT, PRESETS, ADJUSTMENTS, filterUniforms } from './filters.js'
 
 const params = new URLSearchParams(location.search)
 const MODEL_URL = params.get('model') || '/model.glb'
@@ -59,6 +60,7 @@ function goBack() {
 }
 window.rdBack = () => {                     // Android back key (called from native)
   if (!$('license').classList.contains('hidden')) { $('license').classList.add('hidden'); return }
+  if (fxIsOpen()) { closeFx(); return }
   goBack()
 }
 $('back').onclick = goBack
@@ -229,6 +231,8 @@ function setState(next) {
   $('reset').classList.toggle('hidden', next !== 'placed')
   $('size').classList.toggle('hidden', next !== 'placed')
   $('shutterRow').classList.toggle('hidden', next !== 'placed')
+  $('fx').classList.toggle('hidden', next !== 'placed')
+  if (next !== 'placed') closeFx()
   $('anim').classList.toggle('hidden', next !== 'placed' || !mixer)
   reticle.visible = next === 'ready'
   placed.visible = next === 'placed'
@@ -295,6 +299,12 @@ function updateSizeLabel() {
   const h = targetPos.y
   $('size').textContent = `${Math.round(userScale * 100)}%` + (h > 0.01 ? ` · ${h < 1 ? Math.round(h * 100) + ' cm' : h.toFixed(2) + ' m'} up` : '')
 }
+
+// Subtle vibration on button taps (PLACE MODEL and the shutter already vibrate when they act)
+document.addEventListener('click', e => {
+  const button = e.target.closest('button')
+  if (button && button.id !== 'place' && button.id !== 'shutter') native?.haptic?.()
+})
 
 // ------------------------------------------------------------------ gestures
 
@@ -401,6 +411,90 @@ function applyControls(dt) {
   }
 }
 
+// ------------------------------------------------------------------ camera filters (never touch the model)
+
+let fxPreset = 0
+const fxAdjust = {}
+let fxGl = null, fxProgram = null, fxLoc = null, fxDirty = true
+
+/** Sends new values to the camera shader; runs only when something changed, so idle frames cost nothing. */
+function pushFilter(program) {
+  if (!program || !fxGl) return
+  if (program !== fxProgram) {
+    fxProgram = program
+    const at = n => fxGl.getUniformLocation(program, n)
+    fxLoc = { on: at('uOn'), A: at('uA'), B: at('uB'), mix: at('uMix'), vig: at('uVig') }
+    fxDirty = true
+  }
+  if (!fxDirty) return
+  fxDirty = false
+  const u = filterUniforms(PRESETS[fxPreset], fxAdjust)
+  const previous = fxGl.getParameter(fxGl.CURRENT_PROGRAM)
+  fxGl.useProgram(program)
+  fxGl.uniform1f(fxLoc.on, u.on)
+  fxGl.uniform4fv(fxLoc.A, u.A)
+  fxGl.uniform4fv(fxLoc.B, u.B)
+  fxGl.uniform4fv(fxLoc.mix, u.mix)
+  fxGl.uniform1f(fxLoc.vig, u.vig)
+  fxGl.useProgram(previous)
+}
+
+const fxIsOpen = () => !$('fxPanel').classList.contains('hidden')
+function openFx() { $('fxPanel').classList.remove('hidden'); document.body.classList.add('fx-open') }
+function closeFx() { $('fxPanel').classList.add('hidden'); document.body.classList.remove('fx-open') }
+
+function showFxTab(adjust) {
+  $('fxTabFilters').classList.toggle('on', !adjust)
+  $('fxTabAdjust').classList.toggle('on', adjust)
+  $('fxStrip').classList.toggle('hidden', adjust)
+  $('fxSliders').classList.toggle('hidden', !adjust)
+}
+
+function selectPreset(i) {
+  fxPreset = i
+  fxDirty = true
+  document.querySelectorAll('.fxPreset').forEach((b, n) => b.classList.toggle('on', n === i))
+}
+
+PRESETS.forEach((preset, i) => {
+  const b = document.createElement('button')
+  b.className = 'fxPreset'
+  const swatch = document.createElement('i')
+  swatch.style.background = preset.swatch
+  b.append(swatch, preset.name)
+  b.onclick = () => selectPreset(i)
+  $('fxStrip').appendChild(b)
+})
+selectPreset(0)
+
+ADJUSTMENTS.forEach(({ key, label }) => {
+  const row = document.createElement('div')
+  row.className = 'fxRow'
+  const name = document.createElement('label')
+  name.textContent = label
+  const slider = document.createElement('input')
+  Object.assign(slider, { type: 'range', min: -100, max: 100, value: 0 })
+  slider.dataset.key = key
+  const value = document.createElement('output')
+  value.textContent = '0'
+  slider.oninput = () => { fxAdjust[key] = +slider.value; value.textContent = slider.value; fxDirty = true }
+  row.append(name, slider, value)
+  $('fxSliders').appendChild(row)
+})
+
+$('fx').onclick = openFx
+$('fxClose').onclick = closeFx
+$('fxTabFilters').onclick = () => showFxTab(false)
+$('fxTabAdjust').onclick = () => showFxTab(true)
+$('fxReset').onclick = () => {
+  for (const key of Object.keys(fxAdjust)) delete fxAdjust[key]
+  document.querySelectorAll('.fxRow').forEach(row => {
+    row.querySelector('input').value = 0
+    row.querySelector('output').textContent = '0'
+  })
+  selectPreset(0)
+}
+
 // ------------------------------------------------------------------ per-frame
 
 const clock = new THREE.Clock()
@@ -485,11 +579,12 @@ async function startAR() {
 
   XR8.XrController.configure({ scale: 'responsive' })
   XR8.addCameraPipelineModules([
-    XR8.GlTextureRenderer.pipelineModule(),   // camera feed
+    XR8.GlTextureRenderer.pipelineModule({ fragmentSource: FILTER_FRAGMENT }), // camera feed + filters
     XR8.XrController.pipelineModule(),        // SLAM
     {
       name: 'realitydrop',
       onStart: ({ canvas: c, GLctx }) => {
+        fxGl = GLctx
         renderer = new THREE.WebGLRenderer({ canvas: c, context: GLctx, alpha: true, antialias: true })
         renderer.autoClear = false
         renderer.setPixelRatio(1)
@@ -504,7 +599,8 @@ async function startAR() {
         state = 'starting'
         setState('scanning')
       },
-      onUpdate: ({ processCpuResult }) => {
+      onUpdate: ({ processCpuResult, processGpuResult }) => {
+        pushFilter(processGpuResult?.gltexturerenderer?.shader)
         const reality = processCpuResult?.reality
         if (!reality?.position || !reality.rotation || !reality.intrinsics) return
         updateTracking(reality)

@@ -146,3 +146,28 @@ button, select { font-family: inherit; }
 #photoThumb { width: 46px; height: 82px; object-fit: cover; border-radius: 12px; border: 1px solid rgba(255,255,255,.35); }
 #photoText { font-size: 14px; font-weight: 600; padding-right: 4px; }
 #share { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: rgba(62,242,255,.15); color: var(--neon); border: 1.2px solid rgba(62,242,255,.5); }
+
+/* Camera filters (no backdrop-filter: blurring the live camera costs FPS) */
+#fx { position: fixed; right: 16px; top: calc(var(--safe-top) + 130px); }
+#fxPanel {
+  position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 0 calc(var(--safe-bottom) + 14px);
+  background: rgba(8, 12, 18, .94); border-top: 1px solid rgba(62, 242, 255, .25); border-radius: 22px 22px 0 0;
+}
+body.fx-open #bottom, body.fx-open #fx { display: none !important; }
+#fxHead { display: flex; align-items: center; gap: 8px; padding: 0 16px 12px; }
+#fxTabs { flex: 1; display: flex; gap: 6px; }
+#fxTabs button, #fxReset { background: none; border: 0; color: var(--muted); font-size: 14px; font-weight: 600; padding: 8px 12px; border-radius: 999px; }
+#fxTabs button.on { background: rgba(62, 242, 255, .15); color: var(--neon); }
+#fxClose { width: 36px; height: 36px; border-radius: 50%; border: 0; display: grid; place-items: center; background: rgba(255,255,255,.07); color: var(--text); }
+#fxClose svg { width: 18px; height: 18px; }
+#fxStrip { display: flex; gap: 12px; padding: 2px 16px; overflow-x: auto; touch-action: pan-x; scrollbar-width: none; }
+#fxStrip::-webkit-scrollbar { display: none; }
+.fxPreset { flex: none; width: 64px; background: none; border: 0; padding: 0; color: var(--muted); font-size: 12px; font-weight: 500; }
+.fxPreset i { display: block; width: 56px; height: 56px; margin: 2px auto 6px; border-radius: 50%; border: 2px solid rgba(255,255,255,.14); }
+.fxPreset.on { color: var(--neon); font-weight: 700; }
+.fxPreset.on i { border-color: var(--neon); }
+#fxSliders { max-height: 42vh; overflow-y: auto; touch-action: pan-y; padding: 0 16px; }
+.fxRow { display: flex; align-items: center; gap: 10px; height: 42px; font-size: 13px; }
+.fxRow label { width: 82px; flex: none; color: var(--text); }
+.fxRow output { width: 36px; flex: none; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.fxRow input { flex: 1; min-width: 0; accent-color: var(--neon); touch-action: none; height: 28px; }

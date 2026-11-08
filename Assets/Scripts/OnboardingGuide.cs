@@ -7,12 +7,10 @@ using TMPro;
 /// "How it works" guide shown after the landing loader: three swipeable pages
 /// (Search → Preview → Place in AR), each with an animated illustration drawn in code in the cyan
 /// neon theme (NeonArt), title, short text, page dots, NEXT / GET STARTED and Skip.
-/// Shown on first launch (PlayerPrefs "GuideSeenV1"); in Development builds it shows every launch
-/// so it can be reviewed on the device.
+/// Shown once every time the app is started (not when coming back to the home screen from a model).
 /// </summary>
 public class OnboardingGuide : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler
 {
-    const string SeenKey = "GuideSeenV1";
     static bool shownThisRun;
 
     static readonly (string title, string body)[] Pages =
@@ -37,7 +35,6 @@ public class OnboardingGuide : MonoBehaviour, IBeginDragHandler, IDragHandler, I
     public static void ShowIfNeeded()
     {
         if (shownThisRun) return;
-        if (PlayerPrefs.GetInt(SeenKey, 0) == 1 && !Debug.isDebugBuild) return;
         shownThisRun = true;
         var canvas = UIKit.CreateCanvas(null, "OnboardingGuide", 90); // just under the loader, which fades over it
         canvas.gameObject.AddComponent<OnboardingGuide>().Build((RectTransform)canvas.transform);
@@ -275,8 +272,6 @@ public class OnboardingGuide : MonoBehaviour, IBeginDragHandler, IDragHandler, I
     {
         if (closing) return;
         closing = true;
-        PlayerPrefs.SetInt(SeenKey, 1);
-        PlayerPrefs.Save();
     }
 
     public void OnBeginDrag(PointerEventData e) { dragging = true; dragStart = position; }

@@ -9,7 +9,7 @@ using TMPro;
 ///  - soft shadow that turns into a cyan glow while pressed / downloading
 ///  - inset thumbnail with matching rounded corners, cover-cropped (never stretched)
 ///  - pulsing skeleton while the thumbnail loads, then a fade-in
-///  - "FREE" pill badge, bold title (max 2 lines) and grey "by author" line
+///  - round animated icon (animated models only), bold title (max 2 lines) and a grey line: file size left, Sketchfab likes right
 ///  - staggered pop-in when the card appears, spring scale when pressed
 /// All sizes scale with the card width, so it looks the same on every phone.
 /// </summary>
@@ -50,7 +50,6 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
     private RectTransform badge;
     private HeartButton heart;
     private UIRoundedCorners badgeShape;
-    private TextMeshProUGUI badgeText;
     private TextMeshProUGUI title;
     private TextMeshProUGUI author;
     private LayoutElement thumbnailElement, titleElement, authorElement;
@@ -76,16 +75,52 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
     /// <summary>~1024px thumbnail used by the download screen.</summary>
     public string HiResThumbnailUrl { get; set; }
     public string AuthorName { get; private set; }
+    public long SizeBytes { get; private set; }
+    public int Likes { get; private set; }
+    public bool Animated { get; private set; }
 
-    /// <summary>Sets the text content. Author may be null/empty.</summary>
-    public void SetInfo(string titleText, string authorName)
+    private TextMeshProUGUI likesText;
+    private RawImage likesIcon;
+
+    /// <summary>"842" / "1.2k" / "12k" / "1.2M".</summary>
+    public static string FormatCount(int n)
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        if (n < 1000) return n.ToString(inv);
+        double k = n / 1000.0;
+        if (k < 10) return k.ToString("0.#", inv) + "k";
+        if (k < 1000) return k.ToString("0", inv) + "k";
+        return (k / 1000.0).ToString("0.#", inv) + "M";
+    }
+
+    /// <summary>"6.2 MB" / "77 MB"; empty when the size is unknown.</summary>
+    public static string FormatSize(long bytes)
+    {
+        if (bytes <= 0) return string.Empty;
+        double mb = bytes / (1024.0 * 1024.0);
+        return mb.ToString(mb >= 10 ? "0" : "0.0", System.Globalization.CultureInfo.InvariantCulture) + " MB";
+    }
+
+    /// <summary>Sets the text content. The card shows the file size; the author is kept for the
+    /// download screen and the preview, which still credit them.</summary>
+    public void SetInfo(string titleText, string authorName, long sizeBytes = 0, int likes = 0, bool animated = false)
     {
         Build();
         TitleText = titleText;
         AuthorName = authorName;
+        SizeBytes = sizeBytes;
         if (title != null) title.text = titleText;
-        if (author != null) author.text = string.IsNullOrEmpty(authorName) ? string.Empty : "by " + authorName;
-        if (badge != null) badge.gameObject.SetActive(true);
+        if (author != null) author.text = FormatSize(sizeBytes);
+        Likes = likes;
+        if (likesText != null)
+        {
+            likesText.text = likes > 0 ? FormatCount(likes) : string.Empty;
+            likesText.gameObject.SetActive(likes > 0);
+            likesIcon.gameObject.SetActive(likes > 0);
+            if (lastCardWidth > 0f) PlaceLikes(lastCardWidth);
+        }
+        Animated = animated;
+        if (badge != null) badge.gameObject.SetActive(animated);
     }
 
     /// <summary>Grey placeholder card shown while a search is loading.</summary>
@@ -94,6 +129,7 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
         Build();
         if (title != null) title.text = string.Empty;
         if (author != null) author.text = string.Empty;
+        if (likesText != null) { likesText.gameObject.SetActive(false); likesIcon.gameObject.SetActive(false); }
         if (badge != null) badge.gameObject.SetActive(false);
         var button = GetComponent<Button>();
         if (button != null) button.interactable = false;
@@ -222,12 +258,55 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
             StyleText(author, authorColor, FontStyles.Normal, 1);
             authorElement = GetOrAdd<LayoutElement>(authorGO);
             authorElement.flexibleHeight = 0f;
+            CreateLikes();
 
             title.transform.SetAsLastSibling();
             authorGO.transform.SetAsLastSibling();
         }
 
         UIRoundedCorners.EnableCanvasChannels(GetComponentInParent<Canvas>());
+    }
+
+    /// <summary>Small grey heart + like count, right-aligned on the file size line.</summary>
+    private void CreateLikes()
+    {
+        var textRt = new GameObject("Likes", typeof(RectTransform)).GetComponent<RectTransform>();
+        textRt.SetParent(author.transform, false);
+        textRt.anchorMin = textRt.anchorMax = textRt.pivot = new Vector2(1f, 1f);
+        likesText = textRt.gameObject.AddComponent<TextMeshProUGUI>();
+        UIFonts.Apply(likesText, UIFonts.Regular);
+        likesText.color = authorColor;
+        likesText.alignment = TextAlignmentOptions.TopRight;
+        likesText.textWrappingMode = TextWrappingModes.NoWrap;
+        likesText.raycastTarget = false;
+
+        var iconRt = new GameObject("LikesIcon", typeof(RectTransform)).GetComponent<RectTransform>();
+        iconRt.SetParent(author.transform, false);
+        iconRt.anchorMin = iconRt.anchorMax = iconRt.pivot = new Vector2(1f, 1f);
+        likesIcon = iconRt.gameObject.AddComponent<RawImage>();
+        likesIcon.texture = Favourites.HeartFilled;
+        likesIcon.color = authorColor;
+        likesIcon.raycastTarget = false;
+
+        likesText.gameObject.SetActive(false);
+        likesIcon.gameObject.SetActive(false);
+    }
+
+    private void PlaceLikes(float w)
+    {
+        if (likesText == null) return;
+        float size = w * authorFontSize;
+        float right = w * textSideMargin - Mathf.Max(2f, w * imageInset); // mirrors the left margin of the size text
+        float top = w * 0.008f;
+        likesText.fontSize = size;
+        var textRt = likesText.rectTransform;
+        textRt.sizeDelta = new Vector2(w * 0.4f, size * 1.3f);
+        textRt.anchoredPosition = new Vector2(-right, -top);
+
+        float icon = size * 0.82f;
+        var iconRt = likesIcon.rectTransform;
+        iconRt.sizeDelta = new Vector2(icon, icon);
+        iconRt.anchoredPosition = new Vector2(-right - likesText.GetPreferredValues(likesText.text).x - size * 0.28f, -top - size * 0.19f);
     }
 
     private Image CreateLayer(string layerName, int siblingIndex, out UIRoundedCorners shape)
@@ -261,20 +340,17 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
         badgeShape = go.AddComponent<UIRoundedCorners>();
         badgeShape.SetRadius(9999f); // pill
 
-        var textGO = new GameObject("Label", typeof(RectTransform));
-        var textRect = (RectTransform)textGO.transform;
-        textRect.SetParent(badge, false);
-        textRect.anchorMin = Vector2.zero;
-        textRect.anchorMax = Vector2.one;
-        textRect.offsetMin = textRect.offsetMax = Vector2.zero;
-        badgeText = textGO.AddComponent<TextMeshProUGUI>();
-        UIFonts.Apply(badgeText, UIFonts.Display);
-        badgeText.text = "FREE";
-        badgeText.alignment = TextAlignmentOptions.Center;
-        badgeText.characterSpacing = 10f;
-        badgeText.color = new Color(0.70f, 0.97f, 1f, 1f);
-        badgeText.raycastTarget = false;
-        badgeText.textWrappingMode = TextWrappingModes.NoWrap;
+        // Icon only, no text (same play-with-motion icon as the Animated quick action)
+        var iconRt = new GameObject("Icon", typeof(RectTransform)).GetComponent<RectTransform>();
+        iconRt.SetParent(badge, false);
+        iconRt.anchorMin = new Vector2(0.2f, 0.2f);
+        iconRt.anchorMax = new Vector2(0.8f, 0.8f);
+        iconRt.offsetMin = iconRt.offsetMax = Vector2.zero;
+        var icon = iconRt.gameObject.AddComponent<RawImage>();
+        icon.texture = UIIcons.Get(UIIcons.Animated);
+        icon.color = new Color(0.70f, 0.97f, 1f, 1f);
+        icon.raycastTarget = false;
+        go.SetActive(false); // shown only for animated models (SetInfo)
     }
 
     private static void StyleText(TextMeshProUGUI text, Color color, FontStyles style, int lines)
@@ -338,14 +414,14 @@ public class ResultCardView : MonoBehaviour, IPointerDownHandler, IPointerUpHand
             author.margin = new Vector4(side - inset, w * 0.008f, side - inset, bottom);
             float h = Mathf.Ceil(size * 1.3f + bottom + w * 0.008f);
             authorElement.minHeight = authorElement.preferredHeight = h;
+            PlaceLikes(w);
         }
         if (badge != null)
         {
-            float bh = w * 0.095f;
+            float bh = w * 0.17f;    // same size as the heart on the other corner
             float pad = w * 0.035f;
-            badge.sizeDelta = new Vector2(bh * 2.4f, bh);
+            badge.sizeDelta = new Vector2(bh, bh);
             badge.anchoredPosition = new Vector2(pad, -pad);
-            badgeText.fontSize = bh * 0.58f;
             badgeShape.SetBorder(Mathf.Max(1f, w * 0.003f));
         }
         SizeHeart(w);

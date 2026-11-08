@@ -9,7 +9,7 @@ using UnityEngine.UI;
 /// <summary>
 /// "Explore by category" row under the recommendations slideshow: a horizontally scrolling strip of tiles
 /// (Furniture, Sofa, Bed, Cars, Indoor plants, Electronics, …). Each tile shows a real thumbnail — the top
-/// free, family-safe model for that category — and tapping it searches that category.
+/// free model for that category — and tapping it searches that category.
 /// Thumbnails URLs are cached for 7 days (PlayerPrefs "CategoryThumbsV1"); images load politely through
 /// ThumbnailLoader (on-screen tiles first, paused during model downloads). Built by RecommendationsPanel.
 /// </summary>
@@ -264,7 +264,7 @@ public class CategoryRow : MonoBehaviour
         ThumbnailLoader.Load(url, t.Image, viewport, tex => { t.Texture = tex; t.LastSize = Vector2.zero; });
     }
 
-    /// <summary>Thumbnail URL of the top free, downloadable, family-safe model for a category (or null).</summary>
+    /// <summary>Thumbnail URL of the top free, downloadable model for a category (or null).</summary>
     private IEnumerator FetchThumb(int index, System.Action<string> done)
     {
         string url = "https://api.sketchfab.com/v3/search?type=models&downloadable=true&count=12&q=" +
@@ -286,7 +286,6 @@ public class CategoryRow : MonoBehaviour
                 foreach (var model in (JArray)JObject.Parse(json)["results"])
                 {
                     if (model.Value<bool?>("isDownloadable") == false) continue;
-                    if (!ContentFilter.IsSafe(model)) continue;
                     thumb = PickImage((JArray)model["thumbnails"]?["images"], ThumbWidth);
                     if (!string.IsNullOrEmpty(thumb)) break;
                 }

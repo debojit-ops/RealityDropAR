@@ -168,8 +168,10 @@ public class SearchBarStyler : MonoBehaviour
 
         field.customCaretColor = true;
         field.caretColor = NeonColor;
-        field.caretWidth = 1; // field is scaled up in the scene, so 1 already renders as a bold caret
-        field.caretBlinkRate = 0.9f;
+        field.caretWidth = 2;
+        field.caretBlinkRate = 1.2f;
+        // Without this Android shows its own input box above the keyboard and never draws the caret in the field
+        field.shouldHideMobileInput = true;
         field.selectionColor = new Color(NeonColor.r, NeonColor.g, NeonColor.b, 0.35f);
         field.transition = Selectable.Transition.None;
 

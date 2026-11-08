@@ -292,7 +292,7 @@ public class WebARView {
         @JavascriptInterface
         public void haptic() {
             activity.runOnUiThread(() -> {
-                if (webView != null) webView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                if (webView != null) webView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
             });
         }
     }

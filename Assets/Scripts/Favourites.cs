@@ -14,6 +14,9 @@ public static class Favourites
     public class Item
     {
         public string uid, name, author, thumb, hiRes;
+        public long size;      // GLB size in bytes (0 = unknown: saved before sizes were stored)
+        public int likes;      // Sketchfab like count (0 = none / unknown)
+        public bool animated;  // shows the animated badge on the card
         public long savedAt;
     }
 

@@ -7,7 +7,7 @@ using TMPro;
 /// neon theme: the RealityDrop header logo (Resources/RealityDropUI/HeaderLogo.png, cut from bg.png),
 /// a spinning wireframe cube on a glowing floor ring with scan pulses, a progress bar and status text.
 /// Stays until the first recommendation picture has loaded (or restored search results are back),
-/// at least <see cref="MinShow"/> seconds. Then it fades out and, on first launch, opens the guide.
+/// at least <see cref="MinShow"/> seconds. Then it fades out and, once per app start, opens the guide.
 /// </summary>
 public class LandingLoader : MonoBehaviour
 {
@@ -235,7 +235,7 @@ public class LandingLoader : MonoBehaviour
         if (!closing && ready && t >= MinShow && progress >= 1f)
         {
             closing = true;
-            OnboardingGuide.ShowIfNeeded(); // first launch: the guide appears under the fading loader
+            OnboardingGuide.ShowIfNeeded(); // once per app start: the guide appears under the fading loader
         }
         if (closing)
         {

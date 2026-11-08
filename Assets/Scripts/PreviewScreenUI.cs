@@ -160,7 +160,8 @@ public class PreviewScreenUI : MonoBehaviour
             hrt.anchorMin = hrt.anchorMax = new Vector2(1f, 0.5f);
             hrt.anchoredPosition = new Vector2(-20f * K - 44f * K - 10f * K - 22f * K, 0f);
             string thumb = PlayerPrefs.GetString("LastModelThumb", "");
-            heart.Bind(new Favourites.Item { uid = uid, name = title, author = author, thumb = thumb, hiRes = thumb });
+            long.TryParse(PlayerPrefs.GetString("LastModelSizeBytes", ""), out long size);
+            heart.Bind(new Favourites.Item { uid = uid, name = title, author = author, thumb = thumb, hiRes = thumb, size = size, likes = PlayerPrefs.GetInt("LastModelLikes", 0), animated = PlayerPrefs.GetInt("LastModelAnimated", 0) == 1 });
         }
 
         var titleText = NewText("Title", bar, UIFonts.SemiBold, 17f * K, TextMain, TextAlignmentOptions.Center);

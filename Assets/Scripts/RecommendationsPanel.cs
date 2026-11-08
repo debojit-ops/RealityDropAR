@@ -56,6 +56,9 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
     private class Slide
     {
         public string Uid, Caption, Title, ModelName, Author, HiResUrl, Query;
+        public long SizeBytes;
+        public int Likes;
+        public bool Animated;
         public RectTransform Rect;
         public CanvasGroup Group;
         public RawImage Image;
@@ -114,6 +117,7 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
         panel.gridLayout = results.GetComponentInChildren<ResultsGridLayout>(true);
         panel.Build(rt);
         panel.BuildBackButton(results);
+        SearchStatusPill.Create(results.transform, api);
         panel.StartCoroutine(panel.LoadRecommendations());
         return panel;
     }
@@ -225,9 +229,9 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
         CategoryRow.Create(rt, api, searchBar, () => ShouldPause, () => loadingDone);
     }
 
-    private Slide AddSlide(string uid, string caption, string title, string modelName, string author, string hiResUrl, string query)
+    private Slide AddSlide(string uid, string caption, string title, string modelName, string author, string hiResUrl, string query, long sizeBytes = 0, int likes = 0, bool animated = false)
     {
-        var s = new Slide { Uid = uid, Caption = caption, Title = title, ModelName = modelName, Author = author, HiResUrl = hiResUrl, Query = query };
+        var s = new Slide { Likes = likes, Animated = animated, Uid = uid, Caption = caption, Title = title, ModelName = modelName, Author = author, HiResUrl = hiResUrl, Query = query, SizeBytes = sizeBytes };
 
         s.Rect = NewRect("Slide " + title, slideArea);
         s.Rect.anchorMin = s.Rect.anchorMax = new Vector2(0.5f, 0.5f);
@@ -302,7 +306,7 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
         var hrt = (RectTransform)heart.transform;
         hrt.anchorMin = hrt.anchorMax = hrt.pivot = new Vector2(1f, 1f);
         hrt.anchoredPosition = new Vector2(-40f, -40f);
-        heart.Bind(new Favourites.Item { uid = uid, name = modelName, author = author, thumb = hiResUrl, hiRes = hiResUrl });
+        heart.Bind(new Favourites.Item { uid = uid, name = modelName, author = author, thumb = hiResUrl, hiRes = hiResUrl, size = sizeBytes, likes = likes, animated = animated });
 
         // Tap anywhere on the card also opens it
         var btn = s.Rect.gameObject.AddComponent<Button>();
@@ -332,13 +336,13 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
 
     // ------------------------------------------------------------------ loading (cached, parallel, polite)
 
-    [System.Serializable] private class CachedSlide { public string uid, caption, title, author, image, query; }
+    [System.Serializable] private class CachedSlide { public string uid, caption, title, author, image, query; public long size; public int likes; public bool animated; }
     [System.Serializable] private class SlideCache { public long savedAt; public string recentsKey; public List<CachedSlide> slides = new List<CachedSlide>(); }
 
-    const string CacheKey = "RecommendationsCacheV1";
+    const string CacheKey = "RecommendationsCacheV4"; // V4: slides remember file size, likes, animated
     const double CacheHours = 24;
     const int ParallelFetches = 3;     // searches at once (was 1 after another)
-    const int ResultsPerQuery = 12;    // enough headroom for the content filter (was 24)
+    const int ResultsPerQuery = 12;    // enough to skip models already used by another slide (was 24)
     const int SlideImageWidth = 640;   // sharp on the card, ~1/3 the data of 1024 px
 
     /// <summary>Background loading waits while a model downloads or search results are on screen.</summary>
@@ -422,12 +426,12 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
     {
         if (c == null || slides.Exists(s => s.Uid == c.uid)) return;
         usedUids.Add(c.uid);
-        var slide = AddSlide(c.uid, c.caption, c.title, c.title, c.author, c.image, c.query);
+        var slide = AddSlide(c.uid, c.caption, c.title, c.title, c.author, c.image, c.query, c.size, c.likes, c.animated);
         // Same polite loader as the results grid (max 4 at a time, pauses during downloads)
         ThumbnailLoader.Load(c.image, slide.Image, null, tex => { slide.Texture = tex; slide.LastSize = Vector2.zero; });
     }
 
-    /// <summary>Best matching free, downloadable, family-safe model for a query (one slide, or null).</summary>
+    /// <summary>Best matching free, downloadable model for a query (one slide, or null).</summary>
     private IEnumerator FetchTopModel((string caption, string title, string query) pick, System.Action<CachedSlide> onResult, System.Action onDone)
     {
         yield return FetchTopModelInner(pick, onResult);
@@ -459,7 +463,6 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
             string uid = model.Value<string>("uid");
             if (string.IsNullOrEmpty(uid) || usedUids.Contains(uid)) continue;
             if (model.Value<bool?>("isDownloadable") == false) continue;
-            if (!ContentFilter.IsSafe(model)) continue; // no adult / age-restricted models
             string img = PickImage((JArray)model["thumbnails"]?["images"], SlideImageWidth);
             if (string.IsNullOrEmpty(img)) continue;
 
@@ -473,7 +476,10 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
                 title = model.Value<string>("name") ?? "3D model", // real model name; caption says why
                 author = author,
                 image = img,
-                query = pick.query
+                query = pick.query,
+                size = ((model["archives"] as JObject)?["glb"] as JObject)?.Value<long?>("size") ?? 0,
+                likes = model.Value<int?>("likeCount") ?? 0,
+                animated = (model.Value<int?>("animationCount") ?? 0) > 0
             });
             yield break;
         }
@@ -789,7 +795,7 @@ public class RecommendationsPanel : MonoBehaviour, IBeginDragHandler, IDragHandl
     private void Open(Slide s)
     {
         lastInteraction = Time.unscaledTime;
-        if (api != null) api.OpenModel(s.Uid, s.ModelName, s.Author, s.Texture, s.HiResUrl);
+        if (api != null) api.OpenModel(s.Uid, s.ModelName, s.Author, s.Texture, s.HiResUrl, s.SizeBytes, s.Likes, s.Animated);
     }
 
     /// <summary>Tap on the card: show every model for that name (e.g. all "gojo satoru" models).</summary>

@@ -108,13 +108,13 @@ public class SketchfabAPIManager : MonoBehaviour
     private void SpawnResultCard(SearchSession.Entry entry, int appearIndex)
     {
         ResultCardView card = CreateCard();
-        card.SetInfo(entry.Name, entry.Author);
+        card.SetInfo(entry.Name, entry.Author, entry.SizeBytes, entry.Likes, entry.Animated);
         card.HiResThumbnailUrl = entry.HiResThumbnailUrl;
         card.SetAppearDelay(appearIndex * 0.035f); // staggered pop-in
         card.SetFavourite(new Favourites.Item
         {
             uid = entry.Uid, name = entry.Name, author = entry.Author,
-            thumb = entry.ThumbnailUrl, hiRes = entry.HiResThumbnailUrl
+            thumb = entry.ThumbnailUrl, hiRes = entry.HiResThumbnailUrl, size = entry.SizeBytes, likes = entry.Likes, animated = entry.Animated
         });
 
         var img = card.Thumbnail;
@@ -174,6 +174,10 @@ public class SketchfabAPIManager : MonoBehaviour
 
     public string CurrentQuery => currentQuery;
 
+    private int firstPagePending = -1;
+    /// <summary>True while a new search is waiting for its first page of results.</summary>
+    public bool IsSearching => firstPagePending == searchId;
+
     /// <summary>Filters apply to text searches and the Animated list (not to Favourites / Recents).</summary>
     public bool CanFilter => !string.IsNullOrEmpty(currentQuery) && currentQuery != SavedQuery && currentQuery != RecentQuery;
 
@@ -213,6 +217,7 @@ public class SketchfabAPIManager : MonoBehaviour
         pagesLeftToAutoLoad = Mathf.Min(loadInfiniteNoLimit ? 9999 : autoLoadPages, MaxAutoLoadPages);
         shownThisSearch = 0;
         searchId++; // responses from older searches are ignored
+        firstPagePending = searchId;
         SearchSession.Begin(currentQuery);
         if (remember) RecommendationsPanel.RememberSearch(currentQuery); // personalizes the recommendations slideshow
         ClearResults();
@@ -275,6 +280,7 @@ public class SketchfabAPIManager : MonoBehaviour
         // Must be cleared BEFORE parsing: ParseResults chains FetchNextPage() for auto-loading,
         // which returns immediately while isFetchingPage is still true (this was why only 24 results ever appeared).
         isFetchingPage = false;
+        if (isNewSearch) firstPagePending = -1;
 
         if (json != null)
             ParseResults(json, isNewSearch);
@@ -342,7 +348,10 @@ public class SketchfabAPIManager : MonoBehaviour
             string hiResThumbnailUrl = PickThumbnail(images, 1024);
 
             // Remember it (for Back from preview) and show a premium card; see ResultCardView
-            var entry = SearchSession.Add(uid, name, authorName, thumbnailUrl, hiResThumbnailUrl);
+            // "archives" can be JSON null, so check the type before going deeper
+            long sizeBytes = ((model["archives"] as JObject)?["glb"] as JObject)?.Value<long?>("size") ?? 0;
+            int likes = model.Value<int?>("likeCount") ?? 0;
+            var entry = SearchSession.Add(uid, name, authorName, thumbnailUrl, hiResThumbnailUrl, sizeBytes, likes, (model.Value<int?>("animationCount") ?? 0) > 0);
             SpawnResultCard(entry, indexInPage);
             indexInPage++;
         }
@@ -423,9 +432,7 @@ public class SketchfabAPIManager : MonoBehaviour
     /// </summary>
     private static bool IsFreeDownloadable(JToken model)
     {
-        bool? downloadable = model.Value<bool?>("isDownloadable");
-        // Also never show adult / age-restricted models (see ContentFilter)
-        return downloadable != false && ContentFilter.IsSafe(model);
+        return model.Value<bool?>("isDownloadable") != false;
     }
 
     private IEnumerator LoadThumbnail(string url, RawImage image, SearchSession.Entry entry = null)
@@ -503,7 +510,7 @@ public class SketchfabAPIManager : MonoBehaviour
         int index = 0;
         foreach (var f in items)
         {
-            var entry = SearchSession.Add(f.uid, f.name, f.author, f.thumb, string.IsNullOrEmpty(f.hiRes) ? f.thumb : f.hiRes);
+            var entry = SearchSession.Add(f.uid, f.name, f.author, f.thumb, string.IsNullOrEmpty(f.hiRes) ? f.thumb : f.hiRes, f.size, f.likes, f.animated);
             SpawnResultCard(entry, Mathf.Min(index, 12));
             index++;
         }
@@ -519,20 +526,25 @@ public class SketchfabAPIManager : MonoBehaviour
                   card != null ? card.TitleText : null,
                   card != null ? card.AuthorName : null,
                   card != null && card.Thumbnail != null ? card.Thumbnail.texture : null,
-                  card != null ? card.HiResThumbnailUrl : null);
+                  card != null ? card.HiResThumbnailUrl : null,
+                  card != null ? card.SizeBytes : 0,
+                  card != null ? card.Likes : 0,
+                  card != null && card.Animated);
     }
 
     /// <summary>
     /// Downloads and opens a model (download screen → preview). Used by result cards and by the
     /// recommendations slideshow. Ignored while another model is downloading.
     /// </summary>
-    public void OpenModel(string uid, string title, string author, Texture thumbnail, string hiResThumbnailUrl)
+    public void OpenModel(string uid, string title, string author, Texture thumbnail, string hiResThumbnailUrl, long sizeBytes = 0, int likes = 0, bool animated = false)
     {
         if (isDownloading || string.IsNullOrEmpty(uid)) return;
         // "Recents" quick action: newest first (small thumbnail when we have it: lighter for the grid)
         string small = string.IsNullOrEmpty(lastThumbUrl) ? hiResThumbnailUrl : lastThumbUrl;
         lastThumbUrl = null;
-        RecentModels.Add(new Favourites.Item { uid = uid, name = title, author = author, thumb = small, hiRes = hiResThumbnailUrl });
+        RecentModels.Add(new Favourites.Item { uid = uid, name = title, author = author, thumb = small, hiRes = hiResThumbnailUrl, size = sizeBytes, likes = likes, animated = animated });
+        pendingLikes = likes;
+        pendingAnimated = animated;
         if (busyCard != null) busyCard.SetBusy(true); // card glows while its model downloads
 
         // Full-screen progress screen with the model's thumbnail, name and a live percentage
@@ -548,6 +560,8 @@ public class SketchfabAPIManager : MonoBehaviour
     }
 
     private string pendingHiResUrl;
+    private int pendingLikes;
+    private bool pendingAnimated;
 
     private bool waitingForLink;
 
@@ -672,6 +686,8 @@ public class SketchfabAPIManager : MonoBehaviour
         PlayerPrefs.SetString("LastModelSizeBytes", lastDownloadBytes.ToString());
         PlayerPrefs.SetString("LastModelUid", uid);                     // ♥ on the preview screen
         PlayerPrefs.SetString("LastModelThumb", pendingHiResUrl ?? string.Empty);
+        PlayerPrefs.SetInt("LastModelLikes", pendingLikes);
+        PlayerPrefs.SetInt("LastModelAnimated", pendingAnimated ? 1 : 0);
         PlayerPrefs.Save();
 
         if (downloadOverlay != null) downloadOverlay.SetOpening();

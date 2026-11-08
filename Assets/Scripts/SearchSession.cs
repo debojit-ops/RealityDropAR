@@ -17,6 +17,9 @@ public static class SearchSession
         public string Author;
         public string ThumbnailUrl;
         public string HiResThumbnailUrl;
+        public long SizeBytes;      // GLB size from Sketchfab (0 = unknown)
+        public int Likes;           // Sketchfab like count (0 = none / unknown)
+        public bool Animated;       // the model has at least one animation
         public Texture2D Thumbnail; // null = not loaded / released
     }
 
@@ -40,9 +43,9 @@ public static class SearchSession
         PendingRestore = false;
     }
 
-    public static Entry Add(string uid, string name, string author, string thumbUrl, string hiResUrl)
+    public static Entry Add(string uid, string name, string author, string thumbUrl, string hiResUrl, long sizeBytes = 0, int likes = 0, bool animated = false)
     {
-        var e = new Entry { Uid = uid, Name = name, Author = author, ThumbnailUrl = thumbUrl, HiResThumbnailUrl = hiResUrl };
+        var e = new Entry { Likes = likes, Animated = animated, Uid = uid, Name = name, Author = author, ThumbnailUrl = thumbUrl, HiResThumbnailUrl = hiResUrl, SizeBytes = sizeBytes };
         Results.Add(e);
         return e;
     }

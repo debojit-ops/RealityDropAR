@@ -56,6 +56,23 @@
     <button id="credit" class="credit">XR Engine © Niantic Spatial, Inc. · License</button>
   </footer>
 
+  <button id="fx" class="round hidden" aria-label="Filters and adjustments">
+    <svg viewBox="0 0 24 24"><circle cx="9" cy="9" r="5.5"/><circle cx="15" cy="9" r="5.5"/><circle cx="12" cy="15" r="5.5"/></svg>
+  </button>
+
+  <section id="fxPanel" class="hidden">
+    <div id="fxHead">
+      <div id="fxTabs">
+        <button id="fxTabFilters" class="on">Filters</button>
+        <button id="fxTabAdjust">Adjust</button>
+      </div>
+      <button id="fxReset">Reset</button>
+      <button id="fxClose" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <div id="fxStrip"></div>
+    <div id="fxSliders" class="hidden"></div>
+  </section>
+
   <div id="ring"></div>
   <div id="flash"></div>
   <div id="photo" class="pill hidden">
